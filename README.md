@@ -131,5 +131,4 @@ _✨ 稚梦爆改 · 全能链接解析器 ✨_
 
 ## 🙏 致谢
 
-本项目核心代码来自 [nonebot-plugin-parser](https://github.com/fllesser/nonebot-plugin-parser)，请前往原仓库给作者点个 Star！  
-同时感谢 **稚梦** 团队的深度爆改与优化，让插件重获新生。
+本项目核心代码来自 [nonebot-plugin-parser](https://github.com/fllesser/nonebot-plugin-parser)，请前往原仓库给作者点个 Star！
