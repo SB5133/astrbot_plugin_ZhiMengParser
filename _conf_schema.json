@@ -111,7 +111,7 @@
     "detect_action": {
         "description": "识别到链接后的行为",
         "hint": "text=发送解析提示文字（需开启“发送解析文本”）；emoji=给该消息贴表情；none=静默不反馈",
-        "type": "select",
+        "type": "string",
         "options": ["text", "emoji", "none"],
         "default": "text"
     },

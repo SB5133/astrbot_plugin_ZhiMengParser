@@ -12,6 +12,10 @@
 - 完善并统一各平台统计占位符：B站视频同时支持 `{reply}` 与 `{comment}`（值相同），抖音/小红书/微博/快手/视频号均提供 `{like}/{favorite}/{comment}/{share}`，部分平台额外提供 `{view}` 播放量
 - 更新配置说明，在「解析文本模板」hint 中完整列出通用占位符及各平台支持的统计占位符
 
+### 修复
+
+- 修复 `_conf_schema.json` 中 `detect_action` 使用 AstrBot 不支持的 `select` 类型导致插件载入失败的问题，改为 `string` 类型
+
 ## v1.0.0
 
 插件更名为 **astrbot_plugin_ZhiMengParser**，由稚梦接手维护后的首个版本。
