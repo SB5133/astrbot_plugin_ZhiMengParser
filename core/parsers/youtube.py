@@ -54,6 +54,7 @@ class YouTubeParser(BaseParser):
                 proxy=self.proxy,
                 format="bv*[height<=720]+ba/b[height<=720]",
                 node=True,
+                platform=self.platform.name,
             )
             contents.append(
                 self.create_video_content(
@@ -96,6 +97,7 @@ class YouTubeParser(BaseParser):
                 cookiefile=self.cookiejar.cookie_file,
                 headers=self.headers,
                 proxy=self.proxy,
+                platform=self.platform.name,
             )
             contents.append(
                 self.create_audio_content(audio_task, duration=video_info.duration)

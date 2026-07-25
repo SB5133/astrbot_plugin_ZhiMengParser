@@ -354,6 +354,7 @@ class InstagramParser(BaseParser):
                         img_name=image_name,
                         headers=self.headers,
                         proxy=self.proxy,
+                        platform=self.platform.name,
                     )
                     contents.append(ImageContent(image_task))
                 return self.result(contents=contents, url=final_url)
@@ -364,6 +365,7 @@ class InstagramParser(BaseParser):
                     headers=self.headers,
                     proxy=self.proxy,
                     format="best[height<=720]/bestvideo[height<=720]+bestaudio/best",
+                    platform=self.platform.name,
                 )
                 contents.append(VideoContent(video_task, None, 0))
                 return self.result(contents=contents, url=final_url)
@@ -397,6 +399,7 @@ class InstagramParser(BaseParser):
                             output_path=output_path,
                             headers=self.headers,
                             proxy=self.proxy,
+                            platform=self.platform.name,
                         )
                     contents.append(VideoContent(video_task, cover_task, duration))
                 else:
@@ -414,6 +417,7 @@ class InstagramParser(BaseParser):
                                 output_path=output_path,
                                 headers=self.headers,
                                 proxy=self.proxy,
+                                platform=self.platform.name,
                             )
                         contents.append(VideoContent(video_task, cover_task, duration))
                         if meta_entry is None:
@@ -428,6 +432,7 @@ class InstagramParser(BaseParser):
                             headers=self.headers,
                             proxy=self.proxy,
                             format="best[height<=720]/bestvideo[height<=720]+bestaudio/best",
+                            platform=self.platform.name,
                         )
                         contents.append(VideoContent(video_task, cover_task, duration))
                         if meta_entry is None:
@@ -451,6 +456,7 @@ class InstagramParser(BaseParser):
                             headers=self.headers,
                             proxy=self.proxy,
                             format="best[height<=720]/bestvideo[height<=720]+bestaudio/best",
+                            platform=self.platform.name,
                         )
                         contents.append(VideoContent(video_task, None, duration))
                 except ParseException:
@@ -468,6 +474,7 @@ class InstagramParser(BaseParser):
                         img_name=image_name,
                         headers=self.headers,
                         proxy=self.proxy,
+                        platform=self.platform.name,
                     )
                     contents.append(ImageContent(image_task))
             if not contents:

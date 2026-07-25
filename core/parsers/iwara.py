@@ -203,7 +203,9 @@ class IwaraParser(BaseParser):
                 url=f"https://www.iwara.tv/video/{video_id}",
             )
 
-        img_path = await self.downloader.download_img(video_thumbnail, proxy=self.proxy)
+        img_path = await self.downloader.download_img(
+            video_thumbnail, proxy=self.proxy, platform=self.platform.name
+        )
         video_thumbnail_img = api.auto_blur_video_thumbnail(
             img_path, r18, self.mycfg.nsfw or "blur"
         )
@@ -218,7 +220,9 @@ class IwaraParser(BaseParser):
         send_info = f"视频描述: {video_body}\n\nTAG: {', '.join(f'#{tag}' for tag in video_tags)}"
 
         video_contents = VideoContent(
-            path_task=self.downloader.download_video(video_url),
+            path_task=self.downloader.download_video(
+                video_url, proxy=self.proxy, platform=self.platform.name
+            ),
             cover=video_thumbnail_img if video_thumbnail_img else None,
             duration=video_duration,
         )
@@ -286,7 +290,9 @@ class IwaraParser(BaseParser):
 
         image_contents = []
         for img_url in image_urls:
-            img_path = await self.downloader.download_img(img_url, proxy=self.proxy)
+            img_path = await self.downloader.download_img(
+                img_url, proxy=self.proxy, platform=self.platform.name
+            )
             img = api.auto_blur_video_thumbnail(
                 img_path, image_rating, self.mycfg.nsfw or "blur"
             )

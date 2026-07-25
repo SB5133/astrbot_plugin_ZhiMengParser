@@ -1,6 +1,7 @@
 import asyncio
 import uuid
 from collections.abc import Awaitable, Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from functools import lru_cache, wraps
 from io import BytesIO
@@ -14,6 +15,7 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 from astrbot.api import logger
 
+from .cache import RenderCacheManager
 from .config import PluginConfig
 from .data import GraphicsContent, ParseResult
 
@@ -315,14 +317,32 @@ class Renderer:
     DEFAULT_FONT_PATH: ClassVar[Path] = RESOURCES_DIR / _FONT_FILENAME
     """默认字体路径"""
 
-    def __init__(self, config: PluginConfig):
+    def __init__(
+        self,
+        config: PluginConfig,
+        cache_manager: RenderCacheManager | None = None,
+    ):
         self.cfg = config
+        self.cache = cache_manager
         self.EMOJI_SOURCE = EmojiCDNSource(
             base_url=self.cfg.emoji_cdn,
             style=self.cfg.emoji_style,
             cache_dir=self.cfg.cache_dir / self._EMOJIS,
         )
         """Emoji Source"""
+
+        # 渲染专用线程池，避免 Pillow/Apilmoji 阻塞主事件循环
+        self._executor = ThreadPoolExecutor(
+            thread_name_prefix="zhimeng-render",
+            max_workers=2,
+        )
+        self._loop: asyncio.AbstractEventLoop | None = None
+
+    def close(self):
+        """关闭渲染线程池"""
+        if self._executor:
+            self._executor.shutdown(wait=True)
+            self._executor = None  # type: ignore[assignment]
 
     @classmethod
     def load_resources(cls):
@@ -509,22 +529,81 @@ class Renderer:
         canvas.alpha_composite(content, (margin, margin))
         return canvas.convert("RGB")
 
-    async def render_card(self, result: ParseResult) -> Path | None:
-        """渲染卡片并落盘，失败返回 None"""
-        cache = self.cfg.cache_dir / f"card_{uuid.uuid4().hex}.png"
+    async def render_card(
+        self,
+        result: ParseResult,
+        cfg: PluginConfig | None = None,
+    ) -> Path | None:
+        """渲染卡片并落盘，失败返回 None
+
+        流程：
+        1. 若开启缓存，先计算智能缓存键并查询缓存。
+        2. 命中缓存直接返回路径。
+        3. 未命中则在线程池中执行渲染，避免阻塞主事件循环。
+        4. 渲染结果写入缓存（如启用）。
+
+        Args:
+            cfg: 可选的有效配置（如群覆盖后的配置）。留空使用 Renderer 初始化时的全局配置。
+        """
+        cfg = cfg or self.cfg
+        cache_key: str | None = None
+        if self.cache and cfg.perf_render_cache_enabled:
+            try:
+                cache_key = await self.cache.compute_key(result, cfg)
+                cached_path = self.cache.get(cache_key)
+                if cached_path:
+                    logger.debug(f"[Renderer] 缓存命中: {cache_key}")
+                    return cached_path
+            except Exception as e:
+                logger.debug(f"[Renderer] 缓存键计算失败: {e}")
+
         try:
-            img = await self._create_card_image(result)
+            img = await self._render_in_thread_pool(result, cfg)
+        except Exception:
+            logger.error(f"Failed to render card for result={result}")
+            return None
+
+        if img is None:
+            return None
+
+        # 保存到临时文件
+        file_name = f"card_{cache_key}.png" if cache_key else f"card_{uuid.uuid4().hex}.png"
+        cache = self.cfg.cache_dir / file_name
+        try:
             buf = BytesIO()
             await asyncio.to_thread(img.save, buf, format="PNG")
-
             async with aiofiles.open(cache, "wb") as fp:
                 await fp.write(buf.getvalue())
-            return cache
-        except Exception:
-            logger.error(
-                f"Failed to render card for result={result}",
-            )
+        except Exception as e:
+            logger.error(f"Failed to save rendered card: {e}")
             return None
+
+        # 写入缓存管理器
+        if self.cache and cfg.perf_render_cache_enabled and cache_key:
+            try:
+                cache = self.cache.set(cache_key, cache)
+            except Exception as e:
+                logger.debug(f"[Renderer] 写入缓存失败: {e}")
+
+        return cache
+
+    async def _render_in_thread_pool(
+        self,
+        result: ParseResult,
+        cfg: PluginConfig,
+    ) -> PILImage | None:
+        """根据配置决定是否在线程池中执行渲染"""
+        if not cfg.perf_render_thread_pool:
+            return await self._create_card_image(result)
+
+        if self._loop is None:
+            self._loop = asyncio.get_running_loop()
+
+        def _run_render() -> PILImage:
+            # 在线程内创建独立事件循环运行原本 async 的渲染流程
+            return asyncio.run(self._create_card_image(result))
+
+        return await self._loop.run_in_executor(self._executor, _run_render)
 
     @suppress_exception
     def _load_and_resize_cover(

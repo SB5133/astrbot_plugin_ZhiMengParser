@@ -1,5 +1,68 @@
 # 更新日志
 
+## v1.4.6
+
+### 新增
+
+- 自适应下载并发（性能优化分区）：
+  - `perf_adaptive_download`：总开关，默认关闭
+  - 每个解析器可单独设置 `download_concurrency`，未设置时使用 `perf_download_default_concurrency`
+  - `perf_download_fail_threshold`：同一平台连续下载失败多少次后自动降级
+  - `perf_download_degrade_step`：每次降级减少的并发数
+  - `perf_download_min_concurrency`：并发数最低限制
+  - `perf_download_recover_step`：成功后每次恢复的并发数
+  - `perf_download_recover_interval`：两次并发调整的最小间隔，避免抖动
+- 新增 `core/download.py` 的 `AdaptiveSemaphoreManager`：
+  - 每个平台独立 asyncio.Semaphore
+  - 连续失败达到阈值自动降低并发并输出警告日志
+  - 下载成功且满足恢复间隔后逐步恢复并发
+  - 已接入 `streamd`、`download_*`、`ytdlp_download_*` 等核心下载路径
+
+### 优化
+
+- `core/parsers/base.py` 及各平台解析器（B站/抖音/快手/小红书/微博/视频号/Instagram/YouTube/TikTok/Iwara/知乎等）的下载调用统一传入 `platform=self.platform.name`
+- 群覆盖配置 `group_overrides` 支持覆盖自适应下载相关全部配置
+
+## v1.4.0
+
+### 新增
+
+- 性能优化配置分区，包含三个独立开关：
+  - `perf_render_thread_pool`（线程池渲染）：Pillow 卡片渲染在独立线程池执行，避免阻塞主事件循环
+  - `perf_render_cache_enabled`（智能渲染缓存）：相同内容+相同样式的卡片只渲染一次，后续直接读缓存
+  - `perf_render_cache_ttl`（缓存 TTL）+ `perf_render_cache_max_count`（缓存最大数量）：带过期时间与 LRU 数量限制的缓存管理器
+- 新增 `core/cache.py` 的 `RenderCacheManager`：
+  - 智能缓存键基于 `ParseResult` 内容、卡片样式配置、源媒体文件 mtime 生成 SHA256，内容/样式/源文件变化自动失效
+  - 缓存项超过 TTL 自动失效
+  - 超过最大数量时按 LRU 淘汰并删除对应文件
+  - 缓存索引持久化到磁盘，插件重启后仍在
+
+### 优化
+
+- `core/render.py` 的 `render_card` 改为优先查缓存、未命中再渲染，渲染函数可在线程池中执行
+- 修复 `core/config.py` 中 `verbose()` 方法被错误地放在 `effective()` 的 `return` 之后导致无法调用的问题
+
+## v1.3.0
+
+### 新增
+
+- 用户黑名单 `user_blacklist`：填写用户ID后，该用户发送的链接不再触发解析
+- 私聊开关 `enable_private_chat`：关闭后不再在私聊中触发解析
+- 仲裁机制开关 `arbiter` 现在真正生效：关闭后不再贴表情仲裁，适合单Bot环境
+- 群覆盖配置 `group_overrides`：可为指定群单独覆盖核心配置（启用、detect_action、send_parse_text、render_card、forward_threshold、合并套娃、@用户文本/模板等）
+- 解析文本合并为套娃 `merge_parse_text`：开启后，解析完成后的解析文本不再单独发出，而是作为合并转发消息的一个节点与解析结果一起套娃发出
+- 合并套娃引用目标 `merge_quote_target`：original=套娃引用用户原链接；merged=套娃不引用原链接，作为独立合并消息发出
+
+### 优化
+
+- 解析提示套娃与解析文本套娃完全分离：可单独开启/关闭，同时开启时按 tip → parse_text → media 的顺序合并为一个套娃
+- 解析完成后 @用户 消息保持独立，不参与合并转发
+- 使用群覆盖后的 effective 配置贯穿主流程与发送器
+
+### 修复
+
+- 修复切换 `detect_action=text` 仍会出现表情回应的问题：该表情实际来自仲裁机制，现在关闭仲裁或单独关闭仲裁后不再出现
+
 ## v1.2.0
 
 ### 新增

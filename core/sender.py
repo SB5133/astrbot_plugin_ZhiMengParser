@@ -14,6 +14,7 @@ from astrbot.core.message.components import (
     Nodes,
     Plain,
     Record,
+    Reply,
     Video,
 )
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
@@ -227,7 +228,7 @@ class MessageSender:
         if not plan["preview_card"]:
             return False
 
-        if image_path := await self.renderer.render_card(result):
+        if image_path := await self.renderer.render_card(result, cfg=self.cfg):
             await self.sleep_interval()
             await event.send(event.chain_result([self._image_from_path(image_path)]))
             return True
@@ -249,7 +250,7 @@ class MessageSender:
 
         # 合并转发时，卡片以内联形式作为一个消息段参与合并
         if plan["render_card"] and plan["force_merge"]:
-            if image_path := await self.renderer.render_card(result):
+            if image_path := await self.renderer.render_card(result, cfg=self.cfg):
                 segs.append(self._image_from_path(image_path))
 
         # 轻媒体处理
@@ -305,34 +306,58 @@ class MessageSender:
 
         return segs
 
+    @staticmethod
+    def _add_reply_to_first(
+        segs: list[BaseMessageComponent],
+        msg_id: int | str | None,
+    ) -> list[BaseMessageComponent]:
+        """在消息段列表开头追加 Reply（如尚未存在）"""
+        if msg_id is None or not segs:
+            return segs
+        if isinstance(segs[0], Reply):
+            return segs
+        return [Reply(id=msg_id), *segs]
+
     def _merge_segments_if_needed(
         self,
         event: AstrMessageEvent,
         segs: list[BaseMessageComponent],
         force_merge: bool,
         parser_tip: list[BaseMessageComponent] | None = None,
+        parse_text_segments: list[BaseMessageComponent] | None = None,
+        merge_quote_id: int | str | None = None,
     ) -> list[BaseMessageComponent]:
         """
         根据策略决定是否将消息段合并为转发节点
 
         合并后的消息结构：
-        - 每个原始消息段成为一个 Node
+        - tip → parse_text → 每个原始消息段 依次成为一个 Node
         - 统一使用机器人自身身份
-        - 若提供了解析提示（parser_tip），会作为第一个节点插入
+        - 若提供了 merge_quote_id，会在第一个节点开头插入 Reply 引用原消息
         """
         if not force_merge:
             return segs
-        if not segs and not parser_tip:
+        if not segs and not parser_tip and not parse_text_segments:
             return segs
 
         nodes = Nodes([])
         self_id = event.get_self_id()
 
         if parser_tip:
-            nodes.nodes.append(Node(uin=self_id, name="解析器", content=parser_tip))
+            nodes.nodes.append(
+                Node(uin=self_id, name="解析器", content=parser_tip)
+            )
+        if parse_text_segments:
+            nodes.nodes.append(
+                Node(uin=self_id, name="解析器", content=parse_text_segments)
+            )
 
         for seg in segs:
             nodes.nodes.append(Node(uin=self_id, name="解析器", content=[seg]))
+
+        if nodes.nodes and merge_quote_id is not None:
+            first = nodes.nodes[0]
+            first.content = self._add_reply_to_first(first.content, merge_quote_id)
 
         return [nodes]
 
@@ -360,6 +385,8 @@ class MessageSender:
         result: ParseResult,
         group: SendGroup,
         parser_tip: list[BaseMessageComponent] | None = None,
+        parse_text_segments: list[BaseMessageComponent] | None = None,
+        merge_quote_id: int | str | None = None,
     ) -> bool:
         plan = self._build_send_plan(
             result,
@@ -375,20 +402,38 @@ class MessageSender:
             f"发送计划: light={len(plan['light'])}, heavy={len(plan['heavy'])}, "
             f"seg_count={seg_count}, forward_threshold={self.cfg.forward_threshold}, "
             f"force_merge={plan['force_merge']}, render_card={plan['render_card']}, "
-            f"has_parser_tip={bool(parser_tip)}"
+            f"has_parser_tip={bool(parser_tip)}, has_parse_text={bool(parse_text_segments)}"
         )
 
-        # 若未触发合并转发，缓存的解析提示作为普通消息先发出去
-        if parser_tip and not plan["force_merge"]:
-            await self.sleep_interval()
-            await event.send(event.chain_result(parser_tip))
-            parser_tip = None
+        # 若未触发合并转发，缓存的解析提示 / 解析文本作为普通消息先发出
+        if not plan["force_merge"]:
+            if parser_tip:
+                await self.sleep_interval()
+                await event.send(
+                    event.chain_result(
+                        self._add_reply_to_first(parser_tip, merge_quote_id)
+                    )
+                )
+                parser_tip = None
+            if parse_text_segments:
+                await self.sleep_interval()
+                await event.send(
+                    event.chain_result(
+                        self._add_reply_to_first(parse_text_segments, merge_quote_id)
+                    )
+                )
+                parse_text_segments = None
 
         preview_sent = await self._send_preview_card(event, result, plan)
 
         segs = await self._build_segments(result, plan)
         segs = self._merge_segments_if_needed(
-            event, segs, plan["force_merge"], parser_tip
+            event,
+            segs,
+            plan["force_merge"],
+            parser_tip=parser_tip,
+            parse_text_segments=parse_text_segments,
+            merge_quote_id=merge_quote_id,
         )
 
         if not segs:
@@ -426,6 +471,8 @@ class MessageSender:
         event: AstrMessageEvent,
         result: ParseResult,
         parser_tip: list[BaseMessageComponent] | None = None,
+        parse_text_segments: list[BaseMessageComponent] | None = None,
+        merge_quote_id: int | str | None = None,
     ):
         """
         发送解析结果的统一入口
@@ -439,6 +486,8 @@ class MessageSender:
 
         Args:
             parser_tip: 识别到链接时缓存的解析提示消息段，仅会合并到第一组转发中
+            parse_text_segments: 解析完成后的解析文本消息段，仅会合并到第一组转发中
+            merge_quote_id: 合并套娃要引用的原消息 ID，None 表示不引用
         """
         groups = self._resolve_groups(result)
         self.cfg.verbose(f"解析结果分组数: {len(groups)}")
@@ -446,7 +495,18 @@ class MessageSender:
         sent = False
         for idx, group in enumerate(groups):
             tip = parser_tip if idx == 0 else None
-            sent = await self._send_group(event, result, group, parser_tip=tip) or sent
+            text = parse_text_segments if idx == 0 else None
+            sent = (
+                await self._send_group(
+                    event,
+                    result,
+                    group,
+                    parser_tip=tip,
+                    parse_text_segments=text,
+                    merge_quote_id=merge_quote_id,
+                )
+                or sent
+            )
 
         if not sent:
             segs = self._build_text_fallback(result)

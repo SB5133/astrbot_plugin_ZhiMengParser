@@ -184,6 +184,7 @@ class BilibiliParser(BaseParser):
                     output_path=output_path,
                     headers=self.headers,
                     proxy=self.proxy,
+                    platform=self.platform.name,
                 )
             else:
                 return await self.downloader.streamd(
@@ -191,6 +192,7 @@ class BilibiliParser(BaseParser):
                     file_name=output_path.name,
                     headers=self.headers,
                     proxy=self.proxy,
+                    platform=self.platform.name,
                 )
 
         video_task = asyncio.create_task(download_video())
@@ -239,7 +241,10 @@ class BilibiliParser(BaseParser):
         contents: list[MediaContent] = []
         for image_url in dynamic_info.image_urls:
             img_task = self.downloader.download_img(
-                image_url, headers=self.headers, proxy=self.proxy
+                image_url,
+                headers=self.headers,
+                proxy=self.proxy,
+                platform=self.platform.name,
             )
             contents.append(ImageContent(img_task))
 
@@ -328,14 +333,20 @@ class BilibiliParser(BaseParser):
         # 下载封面
         if cover := room_data.cover:
             cover_task = self.downloader.download_img(
-                cover, headers=self.headers, proxy=self.proxy
+                cover,
+                headers=self.headers,
+                proxy=self.proxy,
+                platform=self.platform.name,
             )
             contents.append(ImageContent(cover_task))
 
         # 下载关键帧
         if keyframe := room_data.keyframe:
             keyframe_task = self.downloader.download_img(
-                keyframe, headers=self.headers, proxy=self.proxy
+                keyframe,
+                headers=self.headers,
+                proxy=self.proxy,
+                platform=self.platform.name,
             )
             contents.append(ImageContent(keyframe_task))
 

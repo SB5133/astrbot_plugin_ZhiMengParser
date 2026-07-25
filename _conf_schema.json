@@ -11,6 +11,12 @@
         "type": "list",
         "default": []
     },
+    "user_blacklist": {
+        "description": "用户黑名单",
+        "hint": "填写用户ID（如 QQ 号），黑名单用户发送的链接不会触发解析",
+        "type": "list",
+        "default": []
+    },
     "verbose_logging": {
         "description": "详细日志",
         "hint": "开启后，插件会在日志中详细记录每一步操作（匹配、仲裁、防抖、发送计划、转发合并等），方便排查问题",
@@ -19,7 +25,13 @@
     },
     "arbiter": {
         "description": "仲裁机制",
-        "hint": "仲裁机制：一个确保群内只有一个 Bot 对链接进行解析的机制，利用 QQ 贴表情来实现。 注意：此开关无效，所有插件使用者强制启用仲裁机制，以确保所有 Bot 遵循本插件的仲裁协议",
+        "hint": "仲裁机制：一个确保群内只有一个 Bot 对链接进行解析的机制，利用 QQ 贴表情来实现。关闭后不再贴表情仲裁，适合单 Bot 环境",
+        "type": "bool",
+        "default": true
+    },
+    "enable_private_chat": {
+        "description": "私聊启用解析",
+        "hint": "关闭后，私聊消息不再触发解析",
         "type": "bool",
         "default": true
     },
@@ -129,9 +141,22 @@
     },
     "quote_on_detect": {
         "description": "解析提示引用原链接",
-        "hint": "开启text识别反馈时，解析提示文字会引用用户发送的链接消息（QQ平台效果最佳）",
+        "hint": "开启text识别反馈时，解析提示文字会引用用户发送的链接消息（QQ平台效果最佳）。仅在解析提示单独发出时生效；合并到套娃时使用下方的「合并引用目标」",
         "type": "bool",
         "default": false
+    },
+    "merge_parse_text": {
+        "description": "解析文本合并为套娃",
+        "hint": "开启后，解析完成后的解析文本不再单独发出，而是作为合并转发消息的一个节点与解析结果一起套娃发出（需达到转发阈值）。可与「解析提示合并为套娃」同时开启",
+        "type": "bool",
+        "default": false
+    },
+    "merge_quote_target": {
+        "description": "合并套娃引用目标",
+        "hint": "original=套娃消息引用用户发送的原链接；merged=套娃消息本身不引用原链接，作为独立合并消息发出",
+        "type": "string",
+        "options": ["original", "merged"],
+        "default": "original"
     },
     "at_after_parse": {
         "description": "解析完成后@用户",
@@ -218,6 +243,112 @@
         },
         "default": 2
     },
+    "perf_render_thread_pool": {
+        "description": "线程池渲染",
+        "hint": "开启后，Pillow 卡片渲染会在独立线程池中执行，避免阻塞主事件循环，提升并发解析响应速度",
+        "type": "bool",
+        "default": true
+    },
+    "perf_render_cache_enabled": {
+        "description": "智能渲染缓存",
+        "hint": "开启后，相同内容+相同样式配置的卡片只会渲染一次，后续从缓存读取。缓存键基于内容哈希与源文件 mtime，内容或样式变化自动失效",
+        "type": "bool",
+        "default": true
+    },
+    "perf_render_cache_ttl": {
+        "description": "渲染缓存 TTL（秒）",
+        "hint": "渲染缓存的有效期，超过该时间后缓存自动失效。0 表示永不过期",
+        "type": "int",
+        "slider": {
+            "min": 0,
+            "max": 604800,
+            "step": 3600
+        },
+        "default": 86400
+    },
+    "perf_render_cache_max_count": {
+        "description": "渲染缓存最大数量",
+        "hint": "磁盘上最多保留多少张缓存卡片。超过后按 LRU 淘汰最久未使用的缓存",
+        "type": "int",
+        "slider": {
+            "min": 0,
+            "max": 2000,
+            "step": 50
+        },
+        "default": 200
+    },
+    "perf_adaptive_download": {
+        "description": "自适应下载并发",
+        "hint": "开启后，每个平台拥有独立的下载并发信号量；连续下载失败达到阈值时自动降低并发，成功后逐步恢复。默认关闭",
+        "type": "bool",
+        "default": false
+    },
+    "perf_download_default_concurrency": {
+        "description": "默认下载并发数",
+        "hint": "未在解析器中单独设置并发时的默认并发数",
+        "type": "int",
+        "slider": {
+            "min": 1,
+            "max": 20,
+            "step": 1
+        },
+        "default": 3
+    },
+    "perf_download_fail_threshold": {
+        "description": "连续失败降级阈值",
+        "hint": "同一平台连续下载失败多少次后自动降低并发",
+        "type": "int",
+        "slider": {
+            "min": 1,
+            "max": 10,
+            "step": 1
+        },
+        "default": 3
+    },
+    "perf_download_degrade_step": {
+        "description": "每次降级减少并发数",
+        "hint": "触发降级时，并发数减少多少",
+        "type": "int",
+        "slider": {
+            "min": 1,
+            "max": 5,
+            "step": 1
+        },
+        "default": 1
+    },
+    "perf_download_min_concurrency": {
+        "description": "最小下载并发数",
+        "hint": "并发数最低降到多少，避免完全卡死",
+        "type": "int",
+        "slider": {
+            "min": 1,
+            "max": 10,
+            "step": 1
+        },
+        "default": 1
+    },
+    "perf_download_recover_step": {
+        "description": "每次恢复增加并发数",
+        "hint": "下载成功且满足恢复间隔后，并发数增加多少",
+        "type": "int",
+        "slider": {
+            "min": 1,
+            "max": 5,
+            "step": 1
+        },
+        "default": 1
+    },
+    "perf_download_recover_interval": {
+        "description": "并发恢复间隔（秒）",
+        "hint": "两次调整并发之间的最小间隔，避免抖动",
+        "type": "int",
+        "slider": {
+            "min": 10,
+            "max": 600,
+            "step": 10
+        },
+        "default": 60
+    },
     "show_download_fail_tip": {
         "description": "提示下载失败项",
         "hint": "关闭后将不再发送与下载失败相关的提示（如“此项媒体下载失败”、“超过文件大小限制”等）",
@@ -269,6 +400,227 @@
         "type": "string",
         "default": "30 2 * * *"
     },
+    "group_overrides": {
+        "description": "群覆盖配置",
+        "hint": "为指定群（填写群号）单独覆盖部分主配置。未填写的项使用全局配置。仅在群聊中生效",
+        "type": "template_list",
+        "templates": {
+            "group": {
+                "name": "群配置",
+                "items": {
+                    "group_id": {
+                        "description": "群号",
+                        "hint": "要覆盖配置的群号",
+                        "type": "string",
+                        "default": ""
+                    },
+                    "enable": {
+                        "description": "在该群启用解析",
+                        "hint": "关闭后该群不触发解析；留空使用全局配置",
+                        "type": "bool",
+                        "default": null
+                    },
+                    "detect_action": {
+                        "description": "识别到链接后的行为",
+                        "hint": "text=发送解析提示；emoji=贴表情；none=静默；留空使用全局配置",
+                        "type": "string",
+                        "options": ["text", "emoji", "none"],
+                        "default": ""
+                    },
+                    "send_parse_text": {
+                        "description": "发送解析文本",
+                        "hint": "是否在该群发送解析完成后的文本；留空使用全局配置",
+                        "type": "bool",
+                        "default": null
+                    },
+                    "render_card": {
+                        "description": "渲染卡片",
+                        "hint": "是否在该群渲染简介卡片；留空使用全局配置",
+                        "type": "bool",
+                        "default": null
+                    },
+                    "image_render_card": {
+                        "description": "纯图片内容渲染卡片",
+                        "hint": "是否在该群为纯图片内容渲染卡片；留空使用全局配置",
+                        "type": "bool",
+                        "default": null
+                    },
+                    "single_heavy_render_card": {
+                        "description": "单条重媒体仍渲染卡片",
+                        "hint": "是否在该群为单一重媒体渲染预览卡片；留空使用全局配置",
+                        "type": "bool",
+                        "default": null
+                    },
+                    "forward_threshold": {
+                        "description": "转发阈值",
+                        "hint": "该群解析结果消息段数达到阈值时合并转发，0=不合并；留空使用全局配置",
+                        "type": "int",
+                        "slider": {
+                            "min": 0,
+                            "max": 10,
+                            "step": 1
+                        },
+                        "default": null
+                    },
+                    "merge_parsing_tip": {
+                        "description": "解析提示合并为套娃",
+                        "hint": "留空使用全局配置",
+                        "type": "bool",
+                        "default": null
+                    },
+                    "merge_parse_text": {
+                        "description": "解析文本合并为套娃",
+                        "hint": "留空使用全局配置",
+                        "type": "bool",
+                        "default": null
+                    },
+                    "merge_quote_target": {
+                        "description": "合并套娃引用目标",
+                        "hint": "original=引用原链接；merged=不引用；留空使用全局配置",
+                        "type": "string",
+                        "options": ["original", "merged"],
+                        "default": ""
+                    },
+                    "quote_on_detect": {
+                        "description": "解析提示引用原链接",
+                        "hint": "留空使用全局配置",
+                        "type": "bool",
+                        "default": null
+                    },
+                    "at_after_parse": {
+                        "description": "解析完成后@用户",
+                        "hint": "留空使用全局配置",
+                        "type": "bool",
+                        "default": null
+                    },
+                    "at_after_parse_text": {
+                        "description": "解析完成后@用户的文本",
+                        "hint": "可用占位符：{platform} {title} {author} {user_name} {user_id}",
+                        "type": "text",
+                        "default": ""
+                    },
+                    "parsing_tip": {
+                        "description": "解析提示模板",
+                        "hint": "该群识别到链接后发送的提示文字，留空使用全局模板",
+                        "type": "text",
+                        "default": ""
+                    },
+                    "parse_text_template": {
+                        "description": "解析文本模板",
+                        "hint": "该群解析完成后发送的文本模板，留空使用全局模板",
+                        "type": "text",
+                        "default": ""
+                    },
+                    "perf_render_thread_pool": {
+                        "description": "线程池渲染",
+                        "hint": "留空使用全局配置",
+                        "type": "bool",
+                        "default": null
+                    },
+                    "perf_render_cache_enabled": {
+                        "description": "智能渲染缓存",
+                        "hint": "留空使用全局配置",
+                        "type": "bool",
+                        "default": null
+                    },
+                    "perf_render_cache_ttl": {
+                        "description": "渲染缓存 TTL（秒）",
+                        "hint": "留空使用全局配置",
+                        "type": "int",
+                        "slider": {
+                            "min": 0,
+                            "max": 604800,
+                            "step": 3600
+                        },
+                        "default": null
+                    },
+                    "perf_render_cache_max_count": {
+                        "description": "渲染缓存最大数量",
+                        "hint": "留空使用全局配置",
+                        "type": "int",
+                        "slider": {
+                            "min": 0,
+                            "max": 2000,
+                            "step": 50
+                        },
+                        "default": null
+                    },
+                    "perf_adaptive_download": {
+                        "description": "自适应下载并发",
+                        "hint": "留空使用全局配置",
+                        "type": "bool",
+                        "default": null
+                    },
+                    "perf_download_default_concurrency": {
+                        "description": "默认下载并发数",
+                        "hint": "留空使用全局配置",
+                        "type": "int",
+                        "slider": {
+                            "min": 1,
+                            "max": 20,
+                            "step": 1
+                        },
+                        "default": null
+                    },
+                    "perf_download_fail_threshold": {
+                        "description": "连续失败降级阈值",
+                        "hint": "留空使用全局配置",
+                        "type": "int",
+                        "slider": {
+                            "min": 1,
+                            "max": 10,
+                            "step": 1
+                        },
+                        "default": null
+                    },
+                    "perf_download_degrade_step": {
+                        "description": "每次降级减少并发数",
+                        "hint": "留空使用全局配置",
+                        "type": "int",
+                        "slider": {
+                            "min": 1,
+                            "max": 5,
+                            "step": 1
+                        },
+                        "default": null
+                    },
+                    "perf_download_min_concurrency": {
+                        "description": "最小下载并发数",
+                        "hint": "留空使用全局配置",
+                        "type": "int",
+                        "slider": {
+                            "min": 1,
+                            "max": 10,
+                            "step": 1
+                        },
+                        "default": null
+                    },
+                    "perf_download_recover_step": {
+                        "description": "每次恢复增加并发数",
+                        "hint": "留空使用全局配置",
+                        "type": "int",
+                        "slider": {
+                            "min": 1,
+                            "max": 5,
+                            "step": 1
+                        },
+                        "default": null
+                    },
+                    "perf_download_recover_interval": {
+                        "description": "并发恢复间隔（秒）",
+                        "hint": "留空使用全局配置",
+                        "type": "int",
+                        "slider": {
+                            "min": 10,
+                            "max": 600,
+                            "step": 10
+                        },
+                        "default": null
+                    }
+                }
+            }
+        }
+    },
     "parsers_template": {
         "description": "解析器",
         "type": "template_list",
@@ -281,6 +633,17 @@
                         "description": "启用",
                         "type": "bool",
                         "default": true
+                    },
+                    "download_concurrency": {
+                        "description": "下载并发数",
+                        "hint": "该平台的下载并发数，0 表示使用全局默认并发",
+                        "type": "int",
+                        "slider": {
+                            "min": 0,
+                            "max": 20,
+                            "step": 1
+                        },
+                        "default": 0
                     },
                     "use_proxy": {
                         "description": "使用代理",
@@ -350,6 +713,17 @@
                         "type": "bool",
                         "default": true
                     },
+                    "download_concurrency": {
+                        "description": "下载并发数",
+                        "hint": "该平台的下载并发数，0 表示使用全局默认并发",
+                        "type": "int",
+                        "slider": {
+                            "min": 0,
+                            "max": 20,
+                            "step": 1
+                        },
+                        "default": 0
+                    },
                     "use_proxy": {
                         "description": "使用代理",
                         "type": "bool",
@@ -370,6 +744,17 @@
                         "description": "启用",
                         "type": "bool",
                         "default": true
+                    },
+                    "download_concurrency": {
+                        "description": "下载并发数",
+                        "hint": "该平台的下载并发数，0 表示使用全局默认并发",
+                        "type": "int",
+                        "slider": {
+                            "min": 0,
+                            "max": 20,
+                            "step": 1
+                        },
+                        "default": 0
                     },
                     "use_proxy": {
                         "description": "使用代理",
@@ -392,6 +777,17 @@
                         "type": "bool",
                         "default": true
                     },
+                    "download_concurrency": {
+                        "description": "下载并发数",
+                        "hint": "该平台的下载并发数，0 表示使用全局默认并发",
+                        "type": "int",
+                        "slider": {
+                            "min": 0,
+                            "max": 20,
+                            "step": 1
+                        },
+                        "default": 0
+                    },
                     "use_proxy": {
                         "description": "使用代理",
                         "type": "bool",
@@ -412,6 +808,17 @@
                         "description": "启用",
                         "type": "bool",
                         "default": true
+                    },
+                    "download_concurrency": {
+                        "description": "下载并发数",
+                        "hint": "该平台的下载并发数，0 表示使用全局默认并发",
+                        "type": "int",
+                        "slider": {
+                            "min": 0,
+                            "max": 20,
+                            "step": 1
+                        },
+                        "default": 0
                     },
                     "use_proxy": {
                         "description": "使用代理",
@@ -434,6 +841,17 @@
                         "type": "bool",
                         "default": true
                     },
+                    "download_concurrency": {
+                        "description": "下载并发数",
+                        "hint": "该平台的下载并发数，0 表示使用全局默认并发",
+                        "type": "int",
+                        "slider": {
+                            "min": 0,
+                            "max": 20,
+                            "step": 1
+                        },
+                        "default": 0
+                    },
                     "use_proxy": {
                         "description": "使用代理",
                         "type": "bool",
@@ -454,6 +872,17 @@
                         "description": "启用",
                         "type": "bool",
                         "default": true
+                    },
+                    "download_concurrency": {
+                        "description": "下载并发数",
+                        "hint": "该平台的下载并发数，0 表示使用全局默认并发",
+                        "type": "int",
+                        "slider": {
+                            "min": 0,
+                            "max": 20,
+                            "step": 1
+                        },
+                        "default": 0
                     },
                     "use_proxy": {
                         "description": "使用代理",
@@ -493,6 +922,17 @@
                         "type": "bool",
                         "default": true
                     },
+                    "download_concurrency": {
+                        "description": "下载并发数",
+                        "hint": "该平台的下载并发数，0 表示使用全局默认并发",
+                        "type": "int",
+                        "slider": {
+                            "min": 0,
+                            "max": 20,
+                            "step": 1
+                        },
+                        "default": 0
+                    },
                     "use_proxy": {
                         "description": "使用代理",
                         "type": "bool",
@@ -513,6 +953,17 @@
                         "description": "启用",
                         "type": "bool",
                         "default": true
+                    },
+                    "download_concurrency": {
+                        "description": "下载并发数",
+                        "hint": "该平台的下载并发数，0 表示使用全局默认并发",
+                        "type": "int",
+                        "slider": {
+                            "min": 0,
+                            "max": 20,
+                            "step": 1
+                        },
+                        "default": 0
                     },
                     "use_proxy": {
                         "description": "使用代理",
@@ -535,6 +986,17 @@
                         "type": "bool",
                         "default": true
                     },
+                    "download_concurrency": {
+                        "description": "下载并发数",
+                        "hint": "该平台的下载并发数，0 表示使用全局默认并发",
+                        "type": "int",
+                        "slider": {
+                            "min": 0,
+                            "max": 20,
+                            "step": 1
+                        },
+                        "default": 0
+                    },
                     "use_proxy": {
                         "description": "使用代理",
                         "type": "bool",
@@ -555,6 +1017,17 @@
                         "description": "启用",
                         "type": "bool",
                         "default": true
+                    },
+                    "download_concurrency": {
+                        "description": "下载并发数",
+                        "hint": "该平台的下载并发数，0 表示使用全局默认并发",
+                        "type": "int",
+                        "slider": {
+                            "min": 0,
+                            "max": 20,
+                            "step": 1
+                        },
+                        "default": 0
                     },
                     "use_proxy": {
                         "description": "使用代理",
@@ -577,6 +1050,17 @@
                         "type": "bool",
                         "default": true
                     },
+                    "download_concurrency": {
+                        "description": "下载并发数",
+                        "hint": "该平台的下载并发数，0 表示使用全局默认并发",
+                        "type": "int",
+                        "slider": {
+                            "min": 0,
+                            "max": 20,
+                            "step": 1
+                        },
+                        "default": 0
+                    },
                     "use_proxy": {
                         "description": "使用代理",
                         "type": "bool",
@@ -597,6 +1081,17 @@
                         "description": "启用",
                         "type": "bool",
                         "default": true
+                    },
+                    "download_concurrency": {
+                        "description": "下载并发数",
+                        "hint": "该平台的下载并发数，0 表示使用全局默认并发",
+                        "type": "int",
+                        "slider": {
+                            "min": 0,
+                            "max": 20,
+                            "step": 1
+                        },
+                        "default": 0
                     },
                     "use_proxy": {
                         "description": "使用代理",
@@ -619,6 +1114,17 @@
                         "type": "bool",
                         "default": true
                     },
+                    "download_concurrency": {
+                        "description": "下载并发数",
+                        "hint": "该平台的下载并发数，0 表示使用全局默认并发",
+                        "type": "int",
+                        "slider": {
+                            "min": 0,
+                            "max": 20,
+                            "step": 1
+                        },
+                        "default": 0
+                    },
                     "use_proxy": {
                         "description": "使用代理",
                         "type": "bool",
@@ -640,6 +1146,17 @@
                         "type": "bool",
                         "default": true
                     },
+                    "download_concurrency": {
+                        "description": "下载并发数",
+                        "hint": "该平台的下载并发数，0 表示使用全局默认并发",
+                        "type": "int",
+                        "slider": {
+                            "min": 0,
+                            "max": 20,
+                            "step": 1
+                        },
+                        "default": 0
+                    },
                     "use_proxy": {
                         "description": "使用代理",
                         "type": "bool",
@@ -660,6 +1177,17 @@
                         "description": "启用",
                         "type": "bool",
                         "default": true
+                    },
+                    "download_concurrency": {
+                        "description": "下载并发数",
+                        "hint": "该平台的下载并发数，0 表示使用全局默认并发",
+                        "type": "int",
+                        "slider": {
+                            "min": 0,
+                            "max": 20,
+                            "step": 1
+                        },
+                        "default": 0
                     },
                     "use_proxy": {
                         "description": "使用代理",

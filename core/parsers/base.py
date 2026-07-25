@@ -232,7 +232,10 @@ class BaseParser:
         avatar_task = None
         if avatar_url:
             avatar_task = self.downloader.download_img(
-                avatar_url, headers=headers or self.headers, proxy=self.proxy
+                avatar_url,
+                headers=headers or self.headers,
+                proxy=self.proxy,
+                platform=self.platform.name,
             )
         return Author(name=name, avatar=avatar_task, description=description)
 
@@ -247,11 +250,17 @@ class BaseParser:
         cover_task = None
         if cover_url:
             cover_task = self.downloader.download_img(
-                cover_url, headers=headers or self.headers, proxy=self.proxy
+                cover_url,
+                headers=headers or self.headers,
+                proxy=self.proxy,
+                platform=self.platform.name,
             )
         if isinstance(url_or_task, str):
             url_or_task = self.downloader.download_video(
-                url_or_task, headers=headers or self.headers, proxy=self.proxy
+                url_or_task,
+                headers=headers or self.headers,
+                proxy=self.proxy,
+                platform=self.platform.name,
             )
 
         return VideoContent(url_or_task, cover_task, duration)
@@ -267,7 +276,10 @@ class BaseParser:
         cover_task = None
         if cover_url:
             cover_task = self.downloader.download_img(
-                cover_url, headers=headers or self.headers, proxy=self.proxy
+                cover_url,
+                headers=headers or self.headers,
+                proxy=self.proxy,
+                platform=self.platform.name,
             )
         return VideoContent(path_task, cover_task, duration)
 
@@ -280,7 +292,10 @@ class BaseParser:
         contents: list[ImageContent] = []
         for url in image_urls:
             task = self.downloader.download_img(
-                url, headers=headers or self.headers, proxy=self.proxy
+                url,
+                headers=headers or self.headers,
+                proxy=self.proxy,
+                platform=self.platform.name,
             )
             contents.append(ImageContent(task))
         return contents
@@ -294,7 +309,10 @@ class BaseParser:
         contents: list[DynamicContent] = []
         for url in dynamic_urls:
             task = self.downloader.download_video(
-                url, headers=headers or self.headers, proxy=self.proxy
+                url,
+                headers=headers or self.headers,
+                proxy=self.proxy,
+                platform=self.platform.name,
             )
             contents.append(DynamicContent(task))
         return contents
@@ -308,7 +326,10 @@ class BaseParser:
         """创建音频内容"""
         if isinstance(url_or_task, str):
             url_or_task = self.downloader.download_audio(
-                url_or_task, headers=headers or self.headers, proxy=self.proxy
+                url_or_task,
+                headers=headers or self.headers,
+                proxy=self.proxy,
+                platform=self.platform.name,
             )
 
         return AudioContent(url_or_task, duration)
@@ -322,7 +343,10 @@ class BaseParser:
     ):
         """创建图文内容 图片不能为空 文字可空 渲染时文字在前 图片在后"""
         image_task = self.downloader.download_img(
-            image_url, headers=headers or self.headers, proxy=self.proxy
+            image_url,
+            headers=headers or self.headers,
+            proxy=self.proxy,
+            platform=self.platform.name,
         )
         return GraphicsContent(image_task, text, alt)
 
@@ -339,6 +363,7 @@ class BaseParser:
                 headers=headers or self.headers,
                 file_name=name,
                 proxy=self.proxy,
+                platform=self.platform.name,
             )
 
         return FileContent(url_or_task)

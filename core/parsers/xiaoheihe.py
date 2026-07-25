@@ -846,7 +846,10 @@ class XiaoheiheParser(BaseParser):
         path = (parsed.path or "").lower()
         if path.endswith(".m3u8"):
             task = self.downloader.ytdlp_download_video_relaxed(
-                video_url, headers=self.headers, proxy=self.proxy
+                video_url,
+                headers=self.headers,
+                proxy=self.proxy,
+                platform=self.platform.name,
             )
             return self.create_video_content_by_task(
                 task, cover_url, headers=self.headers

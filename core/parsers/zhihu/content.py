@@ -883,6 +883,7 @@ class ZhihuContentMixin:
                 video_url,
                 headers=request_headers,
                 proxy=self.proxy,
+                platform=self.platform.name,
             )
             return self.create_video_content_by_task(
                 task,

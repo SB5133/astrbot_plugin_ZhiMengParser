@@ -9,6 +9,7 @@ from typing import Any, Union, get_args, get_origin, get_type_hints
 
 from astrbot.api import logger
 from astrbot.core.config.astrbot_config import AstrBotConfig
+from astrbot.core.platform.astr_message_event import AstrMessageEvent
 from astrbot.core.star.context import Context
 from astrbot.core.star.star_tools import StarTools
 from astrbot.core.utils.astrbot_path import get_astrbot_plugin_path
@@ -152,6 +153,7 @@ class ParserItem(ConfigNode):
     __template_key: str
     enable: bool
     use_proxy: bool
+    download_concurrency: int | None
     cookies: str | None
     show_body_text: bool | None
     video_send_mode: str | None
@@ -192,12 +194,73 @@ class ParserConfig(ConfigNodeContainer):
         return [k for k, v in self._nodes.items() if getattr(v, "enable", True)]
 
 
+class GroupOverride(ConfigNode):
+    group_id: str
+    enable: bool | None
+    detect_action: str | None
+    send_parse_text: bool | None
+    render_card: bool | None
+    image_render_card: bool | None
+    single_heavy_render_card: bool | None
+    forward_threshold: int | None
+    merge_parsing_tip: bool | None
+    merge_parse_text: bool | None
+    quote_on_detect: bool | None
+    merge_quote_target: str | None
+    at_after_parse: bool | None
+    at_after_parse_text: str | None
+    parsing_tip: str | None
+    parse_text_template: str | None
+
+    perf_render_thread_pool: bool | None
+    perf_render_cache_enabled: bool | None
+    perf_render_cache_ttl: int | None
+    perf_render_cache_max_count: int | None
+
+    perf_adaptive_download: bool | None
+    perf_download_default_concurrency: int | None
+    perf_download_fail_threshold: int | None
+    perf_download_degrade_step: int | None
+    perf_download_min_concurrency: int | None
+    perf_download_recover_step: int | None
+    perf_download_recover_interval: int | None
+
+
+class EffectiveConfig:
+    """
+    群覆盖配置代理。
+
+    对 base PluginConfig 做只读覆盖：如果指定群在 group_overrides 中有配置，
+    优先使用群配置；否则回退到全局配置。
+    """
+
+    def __init__(self, base: PluginConfig, overrides: dict[str, Any]):
+        object.__setattr__(self, "_base", base)
+        object.__setattr__(self, "_overrides", overrides)
+
+    def __getattr__(self, key: str) -> Any:
+        if key in self._overrides:
+            val = self._overrides[key]
+            # None 与空字符串视为未覆盖，回退到全局配置
+            if val is not None and val != "":
+                return val
+        return getattr(self._base, key)
+
+    def __setattr__(self, key: str, value: Any) -> None:
+        if key.startswith("_"):
+            object.__setattr__(self, key, value)
+            return
+        raise AttributeError("EffectiveConfig 是只读的，不允许写入")
+
+
 class PluginConfig(ConfigNode):
     whitelist: list[str]
     blacklist: list[str]
+    user_blacklist: list[str]
 
     arbiter: bool
     debounce_interval: int
+    enable_private_chat: bool
 
     verbose_logging: bool
 
@@ -217,6 +280,8 @@ class PluginConfig(ConfigNode):
     send_parse_text: bool
     detect_action: str
     merge_parsing_tip: bool
+    merge_parse_text: bool
+    merge_quote_target: str
     quote_on_detect: bool
     at_after_parse: bool
     at_after_parse_text: str
@@ -228,10 +293,25 @@ class PluginConfig(ConfigNode):
     parsing_tip: str
     parse_text_template: str
 
+    group_overrides: list[dict[str, Any]]
+
     show_download_fail_tip: bool
     download_timeout: int
     download_retry_times: int
     common_timeout: int
+
+    perf_render_thread_pool: bool
+    perf_render_cache_enabled: bool
+    perf_render_cache_ttl: int
+    perf_render_cache_max_count: int
+
+    perf_adaptive_download: bool
+    perf_download_default_concurrency: int
+    perf_download_fail_threshold: int
+    perf_download_degrade_step: int
+    perf_download_min_concurrency: int
+    perf_download_recover_step: int
+    perf_download_recover_interval: int
 
     proxy: str | None
 
@@ -278,12 +358,38 @@ class PluginConfig(ConfigNode):
 
         self.parser = ParserConfig(self.parsers_template)
 
+        # ---------- 群覆盖配置 ----------
+        self._group_overrides: dict[str, dict[str, Any]] = {}
+        for node in self.group_overrides or []:
+            try:
+                g = GroupOverride(node)
+                gid = g.group_id
+                if not gid:
+                    continue
+                overrides = {}
+                for field in GroupOverride._fields():
+                    if field == "group_id":
+                        continue
+                    val = getattr(g, field, None)
+                    if val is not None:
+                        overrides[field] = val
+                if overrides:
+                    self._group_overrides[gid] = overrides
+            except Exception as e:
+                logger.warning(f"[group_overrides] 解析群配置失败: {e}, node={node}")
+
     def verbose(self, message: str) -> None:
         """详细日志输出。开启 verbose_logging 时使用 INFO 级别，否则使用 DEBUG 级别。"""
         if self.verbose_logging:
             logger.info(f"[ZhiMengParser|详细] {message}")
         else:
             logger.debug(f"[ZhiMengParser] {message}")
+
+    def effective(self, event: AstrMessageEvent) -> EffectiveConfig:
+        """根据事件所属群/会话返回带群覆盖的配置代理"""
+        group_id = event.get_group_id()
+        overrides = self._group_overrides.get(group_id, {})
+        return EffectiveConfig(self, overrides)
 
     @staticmethod
     def load_parser_template(file: Path) -> list[dict[str, Any]]:

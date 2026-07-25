@@ -1,8 +1,11 @@
+import asyncio
+import time
 from asyncio import Task, TimeoutError, create_task, gather, sleep, to_thread
 from collections.abc import Callable, Coroutine
+from contextlib import asynccontextmanager
 from functools import wraps
 from pathlib import Path
-from typing import Any, ParamSpec, TypeVar
+from typing import Any, AsyncGenerator, ParamSpec, TypeVar
 
 import aiofiles
 import yt_dlp
@@ -62,6 +65,103 @@ class VideoInfo(Struct):
         return f"{self.channel}@{self.uploader}"
 
 
+class AdaptiveSemaphoreManager:
+    """平台级自适应下载并发管理器
+
+    - 每个平台拥有独立的 asyncio.Semaphore
+    - 支持在解析器配置中单独设置并发数
+    - 连续下载失败达到阈值时自动降低并发
+    - 下载成功后按间隔逐步恢复并发
+    """
+
+    def __init__(self, config: PluginConfig):
+        self.cfg = config
+        self._semaphores: dict[str, asyncio.Semaphore] = {}
+        self._current: dict[str, int] = {}
+        self._fail_streak: dict[str, int] = {}
+        self._last_change: dict[str, float] = {}
+        self._lock = asyncio.Lock()
+
+    def _get_default_concurrency(self, platform: str) -> int:
+        """获取平台默认并发数（优先使用解析器单独配置）"""
+        try:
+            parser_cfg = getattr(self.cfg.parser, platform)
+            custom = parser_cfg.download_concurrency
+            if custom is not None and custom > 0:
+                return custom
+        except AttributeError:
+            pass
+        return self.cfg.perf_download_default_concurrency
+
+    def _ensure_sem(self, platform: str) -> asyncio.Semaphore:
+        if platform not in self._semaphores:
+            init = self._get_default_concurrency(platform)
+            self._semaphores[platform] = asyncio.Semaphore(init)
+            self._current[platform] = init
+        return self._semaphores[platform]
+
+    @asynccontextmanager
+    async def acquire(self, platform: str | None) -> AsyncGenerator[None, None]:
+        """获取指定平台的下载许可；未启用自适应或平台未知时直接通过"""
+        if not platform or not self.cfg.perf_adaptive_download:
+            yield
+            return
+        sem = self._ensure_sem(platform)
+        async with sem:
+            yield
+
+    async def report_success(self, platform: str | None) -> None:
+        if not platform or not self.cfg.perf_adaptive_download:
+            return
+        async with self._lock:
+            self._fail_streak[platform] = 0
+            now = time.time()
+            interval = self.cfg.perf_download_recover_interval
+            last = self._last_change.get(platform, 0)
+            if interval > 0 and now - last < interval:
+                return
+            cur = self._current.get(platform, self._get_default_concurrency(platform))
+            target = min(
+                cur + self.cfg.perf_download_recover_step,
+                self._get_default_concurrency(platform),
+            )
+            if target != cur:
+                self._resize(platform, target)
+                self._last_change[platform] = now
+                logger.info(
+                    f"[AdaptiveDownload] {platform} 下载成功，并发从 {cur} 恢复至 {target}"
+                )
+
+    async def report_failure(self, platform: str | None) -> None:
+        if not platform or not self.cfg.perf_adaptive_download:
+            return
+        async with self._lock:
+            self._fail_streak[platform] = self._fail_streak.get(platform, 0) + 1
+            if self._fail_streak[platform] < self.cfg.perf_download_fail_threshold:
+                return
+            self._fail_streak[platform] = 0
+            cur = self._current.get(platform, self._get_default_concurrency(platform))
+            target = max(
+                cur - self.cfg.perf_download_degrade_step,
+                self.cfg.perf_download_min_concurrency,
+            )
+            if target != cur:
+                self._resize(platform, target)
+                self._last_change[platform] = time.time()
+                logger.warning(
+                    f"[AdaptiveDownload] {platform} 连续失败达到阈值，并发从 {cur} 降至 {target}"
+                )
+
+    def _resize(self, platform: str, new_size: int) -> None:
+        """调整指定平台的信号量容量
+
+        实现方式：创建新的 Semaphore 替换旧的。已持有旧信号量的任务
+        释放后并发自然下降，新任务直接使用更小的信号量。
+        """
+        self._semaphores[platform] = asyncio.Semaphore(new_size)
+        self._current[platform] = new_size
+
+
 class Downloader:
     """下载器，支持youtube-dlp 和 流式下载"""
 
@@ -75,6 +175,8 @@ class Downloader:
         self.client = ClientSession(
             timeout=ClientTimeout(total=self.cfg.download_timeout)
         )
+        # 自适应并发管理器
+        self.adaptive = AdaptiveSemaphoreManager(config)
 
     async def close(self):
         """关闭网络客户端"""
@@ -88,8 +190,13 @@ class Downloader:
         file_name: str | None = None,
         headers: dict[str, str] | None = None,
         proxy: str | None | object = ...,
+        platform: str | None = None,
     ) -> Path:
-        """流式下载"""
+        """流式下载
+
+        Args:
+            platform: 平台标识，用于自适应并发控制。留空则不启用平台级限流。
+        """
         if not file_name:
             file_name = generate_file_name(url)
         file_path = self.cfg.cache_dir / file_name
@@ -98,56 +205,61 @@ class Downloader:
             return file_path
         headers = headers or self.default_headers
         retries = self.cfg.download_retry_times
-        for attempt in range(retries + 1):
-            try:
-                async with self.client.get(
-                    url, headers=headers, allow_redirects=True, proxy=proxy
-                ) as response:
-                    if response.status >= 400:
-                        raise ClientError(f"HTTP {response.status} {response.reason}")
-                    content_length = response.content_length
-                    max_bytes = self.max_size * 1024 * 1024
 
-                    if content_length == 0:
-                        logger.warning(f"媒体 url: {url}, 大小为 0, 取消下载")
-                        raise ZeroSizeException
-                    if content_length and content_length > max_bytes:
-                        logger.warning(
-                            f"媒体 url: {url} 大小 {content_length / 1024 / 1024:.2f} MB 超过 {self.max_size} MB, 取消下载"
-                        )
-                        raise SizeLimitException
+        async with self.adaptive.acquire(platform):
+            for attempt in range(retries + 1):
+                try:
+                    async with self.client.get(
+                        url, headers=headers, allow_redirects=True, proxy=proxy
+                    ) as response:
+                        if response.status >= 400:
+                            raise ClientError(f"HTTP {response.status} {response.reason}")
+                        content_length = response.content_length
+                        max_bytes = self.max_size * 1024 * 1024
 
-                    downloaded = 0
-                    with self.get_progress_bar(file_name, content_length) as bar:
-                        async with aiofiles.open(file_path, "wb") as file:
-                            async for chunk in response.content.iter_chunked(
-                                1024 * 1024
-                            ):
-                                downloaded += len(chunk)
-                                if downloaded > max_bytes:
-                                    raise SizeLimitException
-                                await file.write(chunk)
-                                bar.update(len(chunk))
+                        if content_length == 0:
+                            logger.warning(f"媒体 url: {url}, 大小为 0, 取消下载")
+                            raise ZeroSizeException
+                        if content_length and content_length > max_bytes:
+                            logger.warning(
+                                f"媒体 url: {url} 大小 {content_length / 1024 / 1024:.2f} MB 超过 {self.max_size} MB, 取消下载"
+                            )
+                            raise SizeLimitException
 
-                    if downloaded == 0:
-                        logger.warning(f"媒体 url: {url}, 实际大小为 0, 取消下载")
-                        raise ZeroSizeException
-                    if content_length and downloaded < content_length:
-                        raise ClientError(
-                            f"HTTP payload incomplete {downloaded}/{content_length}"
-                        )
+                        downloaded = 0
+                        with self.get_progress_bar(file_name, content_length) as bar:
+                            async with aiofiles.open(file_path, "wb") as file:
+                                async for chunk in response.content.iter_chunked(
+                                    1024 * 1024
+                                ):
+                                    downloaded += len(chunk)
+                                    if downloaded > max_bytes:
+                                        raise SizeLimitException
+                                    await file.write(chunk)
+                                    bar.update(len(chunk))
 
-                return file_path
-            except (ZeroSizeException, SizeLimitException):
-                await safe_unlink(file_path)
-                raise
-            except (ClientError, TimeoutError) as exc:
-                await safe_unlink(file_path)
-                if attempt < retries:
-                    await sleep(1 + attempt)
-                    continue
-                logger.exception(f"下载失败 | url: {url}, file_path: {file_path}")
-                raise DownloadException("媒体下载失败") from exc
+                        if downloaded == 0:
+                            logger.warning(f"媒体 url: {url}, 实际大小为 0, 取消下载")
+                            raise ZeroSizeException
+                        if content_length and downloaded < content_length:
+                            raise ClientError(
+                                f"HTTP payload incomplete {downloaded}/{content_length}"
+                            )
+
+                    await self.adaptive.report_success(platform)
+                    return file_path
+                except (ZeroSizeException, SizeLimitException):
+                    await safe_unlink(file_path)
+                    await self.adaptive.report_failure(platform)
+                    raise
+                except (ClientError, TimeoutError) as exc:
+                    await safe_unlink(file_path)
+                    if attempt < retries:
+                        await sleep(1 + attempt)
+                        continue
+                    await self.adaptive.report_failure(platform)
+                    logger.exception(f"下载失败 | url: {url}, file_path: {file_path}")
+                    raise DownloadException("媒体下载失败") from exc
         raise DownloadException("媒体下载失败")
 
     @staticmethod
@@ -179,11 +291,12 @@ class Downloader:
         video_name: str | None = None,
         headers: dict[str, str] | None = None,
         proxy: str | None = None,
+        platform: str | None = None,
     ) -> Path:
         if video_name is None:
             video_name = generate_file_name(url, ".mp4")
         return await self.streamd(
-            url, file_name=video_name, headers=headers, proxy=proxy
+            url, file_name=video_name, headers=headers, proxy=proxy, platform=platform
         )
 
     @auto_task
@@ -194,11 +307,12 @@ class Downloader:
         audio_name: str | None = None,
         headers: dict[str, str] | None = None,
         proxy: str | None = None,
+        platform: str | None = None,
     ) -> Path:
         if audio_name is None:
             audio_name = generate_file_name(url, ".mp3")
         return await self.streamd(
-            url, file_name=audio_name, headers=headers, proxy=proxy
+            url, file_name=audio_name, headers=headers, proxy=proxy, platform=platform
         )
 
     @auto_task
@@ -209,11 +323,12 @@ class Downloader:
         file_name: str | None = None,
         headers: dict[str, str] | None = None,
         proxy: str | None | object = ...,
+        platform: str | None = None,
     ) -> Path:
         if file_name is None:
             file_name = generate_file_name(url, ".zip")
         return await self.streamd(
-            url, file_name=file_name, headers=headers, proxy=proxy
+            url, file_name=file_name, headers=headers, proxy=proxy, platform=platform
         )
 
     @auto_task
@@ -224,10 +339,13 @@ class Downloader:
         img_name: str | None = None,
         headers: dict[str, str] | None = None,
         proxy: str | None | object = ...,
+        platform: str | None = None,
     ) -> Path:
         if img_name is None:
             img_name = generate_file_name(url, ".jpg")
-        return await self.streamd(url, file_name=img_name, headers=headers, proxy=proxy)
+        return await self.streamd(
+            url, file_name=img_name, headers=headers, proxy=proxy, platform=platform
+        )
 
     async def download_imgs_without_raise(
         self,
@@ -235,9 +353,13 @@ class Downloader:
         *,
         headers: dict[str, str] | None = None,
         proxy: str | None | object = ...,
+        platform: str | None = None,
     ) -> list[Path]:
         paths_or_errs = await gather(
-            *[self.download_img(url, headers=headers, proxy=proxy) for url in urls],
+            *[
+                self.download_img(url, headers=headers, proxy=proxy, platform=platform)
+                for url in urls
+            ],
             return_exceptions=True,
         )
         return [p for p in paths_or_errs if isinstance(p, Path)]
@@ -251,13 +373,14 @@ class Downloader:
         output_path: Path,
         headers: dict[str, str] | None = None,
         proxy: str | None = None,
+        platform: str | None = None,
     ) -> Path:
         """
         download video and audio file by url with stream and merge
         """
         v_path, a_path = await gather(
-            self.download_video(v_url, headers=headers, proxy=proxy),
-            self.download_audio(a_url, headers=headers, proxy=proxy),
+            self.download_video(v_url, headers=headers, proxy=proxy, platform=platform),
+            self.download_audio(a_url, headers=headers, proxy=proxy, platform=platform),
         )
         await merge_av(v_path=v_path, a_path=a_path, output_path=output_path)
         return output_path
@@ -329,6 +452,7 @@ class Downloader:
         proxy: str | None = None,
         format: str | None = None,
         node: bool = False,
+        platform: str | None = None,
     ) -> Path:
         info = await self.ytdlp_extract_info(
             url, cookiefile=cookiefile, headers=headers, proxy=proxy
@@ -358,9 +482,15 @@ class Downloader:
         if node:
             opts["js_runtimes"] = {"node": {}}
 
-        with yt_dlp.YoutubeDL(opts) as ydl:  # type: ignore
-            await to_thread(ydl.download, [url])
-        return video_path
+        async with self.adaptive.acquire(platform):
+            try:
+                with yt_dlp.YoutubeDL(opts) as ydl:  # type: ignore
+                    await to_thread(ydl.download, [url])
+                await self.adaptive.report_success(platform)
+                return video_path
+            except Exception:
+                await self.adaptive.report_failure(platform)
+                raise
 
     @auto_task
     async def ytdlp_download_video_relaxed(
@@ -372,6 +502,7 @@ class Downloader:
         proxy: str | None = None,
         format: str | None = None,
         node: bool = False,
+        platform: str | None = None,
     ) -> Path:
         file_stem = generate_file_name(url)
         video_path = self.cfg.cache_dir / f"{file_stem}.mp4"
@@ -398,15 +529,23 @@ class Downloader:
         if node:
             opts["js_runtimes"] = {"node": {}}
 
-        with yt_dlp.YoutubeDL(opts) as ydl:  # type: ignore
-            await to_thread(ydl.download, [url])
-        if video_path.exists():
-            return video_path
+        async with self.adaptive.acquire(platform):
+            try:
+                with yt_dlp.YoutubeDL(opts) as ydl:  # type: ignore
+                    await to_thread(ydl.download, [url])
+                if video_path.exists():
+                    await self.adaptive.report_success(platform)
+                    return video_path
 
-        candidates = sorted(self.cfg.cache_dir.glob(f"{file_stem}*.mp4"))
-        if candidates:
-            return candidates[0]
-        raise DownloadException("yt-dlp 视频下载失败")
+                candidates = sorted(self.cfg.cache_dir.glob(f"{file_stem}*.mp4"))
+                if candidates:
+                    await self.adaptive.report_success(platform)
+                    return candidates[0]
+                await self.adaptive.report_failure(platform)
+                raise DownloadException("yt-dlp 视频下载失败")
+            except Exception:
+                await self.adaptive.report_failure(platform)
+                raise
 
     @auto_task
     async def ytdlp_download_audio(
@@ -417,6 +556,7 @@ class Downloader:
         headers: dict[str, str] | None = None,
         proxy: str | None = None,
         format: str | None = None,
+        platform: str | None = None,
     ) -> Path:
         file_name = generate_file_name(url)
         audio_path = self.cfg.cache_dir / f"{file_name}.flac"
@@ -441,6 +581,12 @@ class Downloader:
         if cookiefile and cookiefile.is_file():
             opts["cookiefile"] = str(cookiefile)
 
-        with yt_dlp.YoutubeDL(opts) as ydl:  # type: ignore
-            await to_thread(ydl.download, [url])
-        return audio_path
+        async with self.adaptive.acquire(platform):
+            try:
+                with yt_dlp.YoutubeDL(opts) as ydl:  # type: ignore
+                    await to_thread(ydl.download, [url])
+                await self.adaptive.report_success(platform)
+                return audio_path
+            except Exception:
+                await self.adaptive.report_failure(platform)
+                raise
