@@ -197,6 +197,8 @@ class ParserConfig(ConfigNodeContainer):
 class GroupOverride(ConfigNode):
     group_id: str
     enable: bool | None
+    link_debounce_strategy: str | None
+    link_debounce_tip_text: str | None
     detect_action: str | None
     send_parse_text: bool | None
     render_card: bool | None
@@ -260,6 +262,8 @@ class PluginConfig(ConfigNode):
 
     arbiter: bool
     debounce_interval: int
+    link_debounce_strategy: str
+    link_debounce_tip_text: str
     enable_private_chat: bool
 
     verbose_logging: bool

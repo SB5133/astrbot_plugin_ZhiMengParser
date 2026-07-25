@@ -225,18 +225,27 @@ class ParserPlugin(Star):
         elif not cfg.arbiter:
             cfg.verbose("仲裁机制已关闭，直接解析")
 
+        # 原消息 ID，用于引用
+        msg_id = self._get_source_message_id(event)
+        if msg_id is not None:
+            cfg.verbose(f"原消息 ID: {msg_id}")
+
         # 基于link防抖
         if self.debouncer.hit_link(umo, link):
+            cfg.verbose(f"[链接防抖] 链接 {link} 在防抖时间内")
+            strategy = (cfg.link_debounce_strategy or "skip").strip().lower()
+            if strategy == "silent":
+                cfg.verbose("[链接防抖] 策略为 silent，不发送任何反应")
+                return
+            if strategy == "tip":
+                await self._send_debounce_tip(event, cfg, parser.platform.display_name, msg_id)
+                return
+            # 默认 skip：保持原行为，仅日志警告后跳过解析
             logger.warning(f"[链接防抖] 链接 {link} 在防抖时间内，跳过解析")
             return
 
         parser = self.parser_map[keyword]
         cfg.verbose(f"选用解析器: {parser.platform.display_name}")
-
-        # 原消息 ID，用于引用
-        msg_id = self._get_source_message_id(event)
-        if msg_id is not None:
-            cfg.verbose(f"原消息 ID: {msg_id}")
 
         # 识别到链接后的反馈行为（贴表情 / 发送解析提示，带随机延时）
         await self._detect_action(event, cfg, parser.platform.display_name, msg_id)
@@ -346,6 +355,39 @@ class ParserPlugin(Star):
             cfg.verbose(f"解析提示将引用用户消息 ID: {msg_id}")
 
         await event.send(event.chain_result(tip_chain))
+
+    async def _send_debounce_tip(
+        self,
+        event: AstrMessageEvent,
+        cfg: PluginConfig,
+        platform_name: str,
+        msg_id: int | str | None,
+    ):
+        """链接防抖触发 tip 策略时发送的提示文本"""
+        template = (cfg.link_debounce_tip_text or "").strip()
+        if not template:
+            cfg.verbose("[link_debounce] tip 策略文本为空，不发送")
+            return
+
+        user_id = event.get_sender_id()
+        user_name = event.get_sender_name()
+        ctx = {
+            "platform": platform_name,
+            "user_name": user_name or "",
+            "user_id": user_id or "",
+        }
+        tip = MessageSender.render_template(template, ctx)
+        cfg.verbose(f"[link_debounce] 发送防抖提示: {tip}")
+
+        tip_chain: list[BaseMessageComponent] = [Plain(tip)]
+        if msg_id is not None:
+            tip_chain.insert(0, Reply(id=msg_id))
+            cfg.verbose(f"[link_debounce] 引用用户消息 ID: {msg_id}")
+
+        try:
+            await event.send(event.chain_result(tip_chain))
+        except Exception as e:
+            logger.warning(f"发送防抖提示失败: {e}")
 
     async def _react_emoji(self, event: AstrMessageEvent, cfg: PluginConfig):
         """给用户消息贴表情（仅 aiocqhttp 平台支持）"""
