@@ -5,6 +5,7 @@ from collections.abc import Callable, Coroutine
 from contextlib import asynccontextmanager
 from functools import wraps
 from pathlib import Path
+from urllib.parse import urlparse
 from typing import Any, AsyncGenerator, ParamSpec, TypeVar
 
 import aiofiles
@@ -182,6 +183,35 @@ class Downloader:
         """关闭网络客户端"""
         await self.client.close()
 
+    @staticmethod
+    def _extract_host(url: str) -> str:
+        """从 URL 中提取 host（含端口）作为 CDN 节点标识"""
+        try:
+            parsed = urlparse(url)
+            if parsed.hostname:
+                port = parsed.port
+                if port and (
+                    (parsed.scheme == "http" and port != 80)
+                    or (parsed.scheme == "https" and port != 443)
+                ):
+                    return f"{parsed.hostname}:{port}"
+                return parsed.hostname
+        except Exception:
+            pass
+        return url
+
+    @staticmethod
+    def _classify_download_error(exc: Exception) -> str:
+        """将下载异常分类为连接被拒/超时/其他"""
+        if isinstance(exc, TimeoutError):
+            return "timeout"
+        msg = str(exc).lower()
+        if "connection refused" in msg or "cannot connect to host" in msg:
+            return "connection_refused"
+        if "timeout" in msg or "timed out" in msg:
+            return "timeout"
+        return "other"
+
     @auto_task
     async def streamd(
         self,
@@ -207,11 +237,23 @@ class Downloader:
         retries = self.cfg.download_retry_times
 
         async with self.adaptive.acquire(platform):
+            start_time = time.time()
+            start_ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(start_time))
+            host = self._extract_host(url)
+            self.cfg.verbose(
+                f"[Download] 开始下载 | file={file_name} | node={host} | start={start_ts}"
+            )
             for attempt in range(retries + 1):
                 try:
                     async with self.client.get(
                         url, headers=headers, allow_redirects=True, proxy=proxy
                     ) as response:
+                        host = self._extract_host(str(response.url))
+                        if attempt > 0:
+                            self.cfg.verbose(
+                                f"[Download] 节点切换 | file={file_name} | node={host} | attempt={attempt + 1}/{retries + 1}"
+                            )
+
                         if response.status >= 400:
                             raise ClientError(f"HTTP {response.status} {response.reason}")
                         content_length = response.content_length
@@ -246,6 +288,13 @@ class Downloader:
                                 f"HTTP payload incomplete {downloaded}/{content_length}"
                             )
 
+                        elapsed = time.time() - start_time
+                        file_size = file_path.stat().st_size
+                        self.cfg.verbose(
+                            f"[Download] 下载成功 | file={file_name} | node={host} | "
+                            f"elapsed={elapsed:.2f}s | size={file_size / 1024 / 1024:.2f}MB"
+                        )
+
                     await self.adaptive.report_success(platform)
                     return file_path
                 except (ZeroSizeException, SizeLimitException):
@@ -254,10 +303,21 @@ class Downloader:
                     raise
                 except (ClientError, TimeoutError) as exc:
                     await safe_unlink(file_path)
+                    error_type = self._classify_download_error(exc)
                     if attempt < retries:
-                        await sleep(1 + attempt)
+                        wait = 1 + attempt
+                        self.cfg.verbose(
+                            f"[Download] 下载失败，准备重试 | file={file_name} | node={host} | "
+                            f"attempt={attempt + 1}/{retries + 1} | wait={wait}s | "
+                            f"error_type={error_type} | reason={exc}"
+                        )
+                        await sleep(wait)
                         continue
                     await self.adaptive.report_failure(platform)
+                    self.cfg.verbose(
+                        f"[Download] 下载最终失败 | file={file_name} | node={host} | "
+                        f"error_type={error_type} | reason={exc}"
+                    )
                     logger.exception(f"下载失败 | url: {url}, file_path: {file_path}")
                     raise DownloadException("媒体下载失败") from exc
         raise DownloadException("媒体下载失败")
@@ -483,13 +543,30 @@ class Downloader:
             opts["js_runtimes"] = {"node": {}}
 
         async with self.adaptive.acquire(platform):
+            start_time = time.time()
+            start_ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(start_time))
+            host = self._extract_host(url)
+            self.cfg.verbose(
+                f"[Download] 开始 yt-dlp 下载 | file={video_path.name} | node={host} | start={start_ts}"
+            )
             try:
                 with yt_dlp.YoutubeDL(opts) as ydl:  # type: ignore
                     await to_thread(ydl.download, [url])
+                elapsed = time.time() - start_time
+                file_size = video_path.stat().st_size if video_path.exists() else 0
+                self.cfg.verbose(
+                    f"[Download] yt-dlp 下载成功 | file={video_path.name} | node={host} | "
+                    f"elapsed={elapsed:.2f}s | size={file_size / 1024 / 1024:.2f}MB"
+                )
                 await self.adaptive.report_success(platform)
                 return video_path
-            except Exception:
+            except Exception as exc:
                 await self.adaptive.report_failure(platform)
+                error_type = self._classify_download_error(exc)
+                self.cfg.verbose(
+                    f"[Download] yt-dlp 下载失败 | file={video_path.name} | node={host} | "
+                    f"error_type={error_type} | reason={exc}"
+                )
                 raise
 
     @auto_task
@@ -530,21 +607,44 @@ class Downloader:
             opts["js_runtimes"] = {"node": {}}
 
         async with self.adaptive.acquire(platform):
+            start_time = time.time()
+            start_ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(start_time))
+            host = self._extract_host(url)
+            self.cfg.verbose(
+                f"[Download] 开始 yt-dlp 宽松下载 | file={video_path.name} | node={host} | start={start_ts}"
+            )
             try:
                 with yt_dlp.YoutubeDL(opts) as ydl:  # type: ignore
                     await to_thread(ydl.download, [url])
                 if video_path.exists():
+                    elapsed = time.time() - start_time
+                    file_size = video_path.stat().st_size
+                    self.cfg.verbose(
+                        f"[Download] yt-dlp 宽松下载成功 | file={video_path.name} | node={host} | "
+                        f"elapsed={elapsed:.2f}s | size={file_size / 1024 / 1024:.2f}MB"
+                    )
                     await self.adaptive.report_success(platform)
                     return video_path
 
                 candidates = sorted(self.cfg.cache_dir.glob(f"{file_stem}*.mp4"))
                 if candidates:
+                    elapsed = time.time() - start_time
+                    file_size = candidates[0].stat().st_size
+                    self.cfg.verbose(
+                        f"[Download] yt-dlp 宽松下载成功（候选文件） | file={candidates[0].name} | node={host} | "
+                        f"elapsed={elapsed:.2f}s | size={file_size / 1024 / 1024:.2f}MB"
+                    )
                     await self.adaptive.report_success(platform)
                     return candidates[0]
                 await self.adaptive.report_failure(platform)
                 raise DownloadException("yt-dlp 视频下载失败")
-            except Exception:
+            except Exception as exc:
                 await self.adaptive.report_failure(platform)
+                error_type = self._classify_download_error(exc)
+                self.cfg.verbose(
+                    f"[Download] yt-dlp 宽松下载失败 | file={video_path.name} | node={host} | "
+                    f"error_type={error_type} | reason={exc}"
+                )
                 raise
 
     @auto_task
@@ -582,11 +682,28 @@ class Downloader:
             opts["cookiefile"] = str(cookiefile)
 
         async with self.adaptive.acquire(platform):
+            start_time = time.time()
+            start_ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(start_time))
+            host = self._extract_host(url)
+            self.cfg.verbose(
+                f"[Download] 开始 yt-dlp 音频下载 | file={audio_path.name} | node={host} | start={start_ts}"
+            )
             try:
                 with yt_dlp.YoutubeDL(opts) as ydl:  # type: ignore
                     await to_thread(ydl.download, [url])
+                elapsed = time.time() - start_time
+                file_size = audio_path.stat().st_size if audio_path.exists() else 0
+                self.cfg.verbose(
+                    f"[Download] yt-dlp 音频下载成功 | file={audio_path.name} | node={host} | "
+                    f"elapsed={elapsed:.2f}s | size={file_size / 1024 / 1024:.2f}MB"
+                )
                 await self.adaptive.report_success(platform)
                 return audio_path
-            except Exception:
+            except Exception as exc:
                 await self.adaptive.report_failure(platform)
+                error_type = self._classify_download_error(exc)
+                self.cfg.verbose(
+                    f"[Download] yt-dlp 音频下载失败 | file={audio_path.name} | node={host} | "
+                    f"error_type={error_type} | reason={exc}"
+                )
                 raise

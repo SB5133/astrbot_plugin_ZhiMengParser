@@ -50,7 +50,11 @@
         "description": "链接防抖触发策略",
         "hint": "当同一会话内相同链接在防抖时间内再次出现时：skip=仅跳过解析（默认，保持原行为）；silent=完全静默不反应；tip=发送下方自定义提示文本",
         "type": "string",
-        "options": ["skip", "silent", "tip"],
+        "options": [
+            "skip",
+            "silent",
+            "tip"
+        ],
         "default": "skip"
     },
     "link_debounce_tip_text": {
@@ -143,7 +147,11 @@
         "description": "识别到链接后的行为",
         "hint": "text=识别到链接后立即发送解析提示文字；emoji=给该消息贴表情；none=静默不反馈。与下方「发送解析文本」互不干扰。",
         "type": "string",
-        "options": ["text", "emoji", "none"],
+        "options": [
+            "text",
+            "emoji",
+            "none"
+        ],
         "default": "text"
     },
     "merge_parsing_tip": {
@@ -168,7 +176,10 @@
         "description": "合并套娃引用目标",
         "hint": "original=套娃消息引用用户发送的原链接；merged=套娃消息本身不引用原链接，作为独立合并消息发出",
         "type": "string",
-        "options": ["original", "merged"],
+        "options": [
+            "original",
+            "merged"
+        ],
         "default": "original"
     },
     "at_after_parse": {
@@ -415,7 +426,7 @@
     },
     "group_overrides": {
         "description": "群覆盖配置",
-        "hint": "为指定群（填写群号）单独覆盖部分主配置。未填写的项使用全局配置。仅在群聊中生效",
+        "hint": "为指定群（填写群号）单独覆盖部分主配置。仅在群聊中生效",
         "type": "template_list",
         "templates": {
             "group": {
@@ -429,57 +440,65 @@
                     },
                     "link_debounce_strategy": {
                         "description": "链接防抖触发策略",
-                        "hint": "skip=仅跳过解析；silent=完全静默不反应；tip=发送下方自定义提示文本；留空使用全局配置",
+                        "hint": "skip=仅跳过解析；silent=完全静默不反应；tip=发送下方自定义提示文本",
                         "type": "string",
-                        "options": ["skip", "silent", "tip"],
+                        "options": [
+                            "skip",
+                            "silent",
+                            "tip"
+                        ],
                         "default": ""
                     },
                     "link_debounce_tip_text": {
                         "description": "链接防抖提示文本",
-                        "hint": "策略为 tip 时发送的文本，留空使用全局配置。可用占位符：{platform} {user_name} {user_id}",
+                        "hint": "策略为 tip 时发送的文本，。可用占位符：{platform} {user_name} {user_id}",
                         "type": "text",
                         "default": ""
                     },
                     "enable": {
                         "description": "在该群启用解析",
-                        "hint": "关闭后该群不触发解析；留空使用全局配置",
+                        "hint": "关闭后该群不触发解析",
                         "type": "bool",
                         "default": null
                     },
                     "detect_action": {
                         "description": "识别到链接后的行为",
-                        "hint": "text=发送解析提示；emoji=贴表情；none=静默；留空使用全局配置",
+                        "hint": "text=发送解析提示；emoji=贴表情；none=静默",
                         "type": "string",
-                        "options": ["text", "emoji", "none"],
+                        "options": [
+                            "text",
+                            "emoji",
+                            "none"
+                        ],
                         "default": ""
                     },
                     "send_parse_text": {
                         "description": "发送解析文本",
-                        "hint": "是否在该群发送解析完成后的文本；留空使用全局配置",
+                        "hint": "是否在该群发送解析完成后的文本",
                         "type": "bool",
                         "default": null
                     },
                     "render_card": {
                         "description": "渲染卡片",
-                        "hint": "是否在该群渲染简介卡片；留空使用全局配置",
+                        "hint": "是否在该群渲染简介卡片",
                         "type": "bool",
                         "default": null
                     },
                     "image_render_card": {
                         "description": "纯图片内容渲染卡片",
-                        "hint": "是否在该群为纯图片内容渲染卡片；留空使用全局配置",
+                        "hint": "是否在该群为纯图片内容渲染卡片",
                         "type": "bool",
                         "default": null
                     },
                     "single_heavy_render_card": {
                         "description": "单条重媒体仍渲染卡片",
-                        "hint": "是否在该群为单一重媒体渲染预览卡片；留空使用全局配置",
+                        "hint": "是否在该群为单一重媒体渲染预览卡片",
                         "type": "bool",
                         "default": null
                     },
                     "forward_threshold": {
                         "description": "转发阈值",
-                        "hint": "该群解析结果消息段数达到阈值时合并转发，0=不合并；留空使用全局配置",
+                        "hint": "该群解析结果消息段数达到阈值时合并转发，0=不合并",
                         "type": "int",
                         "slider": {
                             "min": 0,
@@ -490,32 +509,31 @@
                     },
                     "merge_parsing_tip": {
                         "description": "解析提示合并为套娃",
-                        "hint": "留空使用全局配置",
                         "type": "bool",
                         "default": null
                     },
                     "merge_parse_text": {
                         "description": "解析文本合并为套娃",
-                        "hint": "留空使用全局配置",
                         "type": "bool",
                         "default": null
                     },
                     "merge_quote_target": {
                         "description": "合并套娃引用目标",
-                        "hint": "original=引用原链接；merged=不引用；留空使用全局配置",
+                        "hint": "original=引用原链接；merged=不引用",
                         "type": "string",
-                        "options": ["original", "merged"],
+                        "options": [
+                            "original",
+                            "merged"
+                        ],
                         "default": ""
                     },
                     "quote_on_detect": {
                         "description": "解析提示引用原链接",
-                        "hint": "留空使用全局配置",
                         "type": "bool",
                         "default": null
                     },
                     "at_after_parse": {
                         "description": "解析完成后@用户",
-                        "hint": "留空使用全局配置",
                         "type": "bool",
                         "default": null
                     },
@@ -527,31 +545,28 @@
                     },
                     "parsing_tip": {
                         "description": "解析提示模板",
-                        "hint": "该群识别到链接后发送的提示文字，留空使用全局模板",
+                        "hint": "该群识别到链接后发送的提示文字，",
                         "type": "text",
                         "default": ""
                     },
                     "parse_text_template": {
                         "description": "解析文本模板",
-                        "hint": "该群解析完成后发送的文本模板，留空使用全局模板",
+                        "hint": "该群解析完成后发送的文本模板，",
                         "type": "text",
                         "default": ""
                     },
                     "perf_render_thread_pool": {
                         "description": "线程池渲染",
-                        "hint": "留空使用全局配置",
                         "type": "bool",
                         "default": null
                     },
                     "perf_render_cache_enabled": {
                         "description": "智能渲染缓存",
-                        "hint": "留空使用全局配置",
                         "type": "bool",
                         "default": null
                     },
                     "perf_render_cache_ttl": {
                         "description": "渲染缓存 TTL（秒）",
-                        "hint": "留空使用全局配置",
                         "type": "int",
                         "slider": {
                             "min": 0,
@@ -562,7 +577,6 @@
                     },
                     "perf_render_cache_max_count": {
                         "description": "渲染缓存最大数量",
-                        "hint": "留空使用全局配置",
                         "type": "int",
                         "slider": {
                             "min": 0,
@@ -573,13 +587,11 @@
                     },
                     "perf_adaptive_download": {
                         "description": "自适应下载并发",
-                        "hint": "留空使用全局配置",
                         "type": "bool",
                         "default": null
                     },
                     "perf_download_default_concurrency": {
                         "description": "默认下载并发数",
-                        "hint": "留空使用全局配置",
                         "type": "int",
                         "slider": {
                             "min": 1,
@@ -590,7 +602,6 @@
                     },
                     "perf_download_fail_threshold": {
                         "description": "连续失败降级阈值",
-                        "hint": "留空使用全局配置",
                         "type": "int",
                         "slider": {
                             "min": 1,
@@ -601,7 +612,6 @@
                     },
                     "perf_download_degrade_step": {
                         "description": "每次降级减少并发数",
-                        "hint": "留空使用全局配置",
                         "type": "int",
                         "slider": {
                             "min": 1,
@@ -612,7 +622,6 @@
                     },
                     "perf_download_min_concurrency": {
                         "description": "最小下载并发数",
-                        "hint": "留空使用全局配置",
                         "type": "int",
                         "slider": {
                             "min": 1,
@@ -623,7 +632,6 @@
                     },
                     "perf_download_recover_step": {
                         "description": "每次恢复增加并发数",
-                        "hint": "留空使用全局配置",
                         "type": "int",
                         "slider": {
                             "min": 1,
@@ -634,7 +642,6 @@
                     },
                     "perf_download_recover_interval": {
                         "description": "并发恢复间隔（秒）",
-                        "hint": "留空使用全局配置",
                         "type": "int",
                         "slider": {
                             "min": 10,
