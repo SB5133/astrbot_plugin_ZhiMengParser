@@ -285,6 +285,11 @@ class WeiBoParser(BaseParser):
             timestamp=data.timestamp,
             url=data.url,
             repost=repost,
+            extra={
+                "like": data.attitudes_count,
+                "comment": data.comments_count,
+                "share": data.reposts_count,
+            },
         )
 
     def _base62_encode(self, number: int) -> str:
@@ -372,6 +377,13 @@ class WeiboData(Struct):
     pics: list[Pic] | None = None
     page_info: PageInfo | None = None
     retweeted_status: "WeiboData | None" = None  # 转发微博
+
+    attitudes_count: int | str | None = None
+    """点赞数"""
+    comments_count: int | str | None = None
+    """评论数"""
+    reposts_count: int | str | None = None
+    """转发数"""
 
     @property
     def title(self) -> str | None:

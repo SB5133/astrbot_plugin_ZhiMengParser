@@ -274,7 +274,21 @@ class DouyinParser(BaseParser):
             author=author,
             contents=contents,
             timestamp=video_data.create_time,
+            extra=self._build_stats_extra(video_data.statistics),
         )
+
+    @staticmethod
+    def _build_stats_extra(statistics) -> dict:
+        """把抖音统计数据映射为统一占位符"""
+        if not statistics:
+            return {}
+        return {
+            "like": statistics.digg_count,
+            "comment": statistics.comment_count,
+            "favorite": statistics.collect_count,
+            "share": statistics.share_count,
+            "view": statistics.play_count,
+        }
 
     @staticmethod
     def _build_play_url(video_id: str, ratio: str) -> str:
@@ -389,4 +403,5 @@ class DouyinParser(BaseParser):
             author=author,
             contents=contents,
             timestamp=slides_data.create_time,
+            extra=self._build_stats_extra(slides_data.statistics),
         )

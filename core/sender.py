@@ -1,5 +1,9 @@
+import asyncio
+import random
+import string
 from itertools import chain
 from pathlib import Path
+from typing import Any
 
 from astrbot.api import logger
 from astrbot.core.message.components import (
@@ -53,6 +57,72 @@ class MessageSender:
     def __init__(self, config: PluginConfig, renderer: Renderer):
         self.cfg = config
         self.renderer = renderer
+
+    @staticmethod
+    def _clamp_range(lo: int | None, hi: int | None) -> tuple[float, float]:
+        """把可空的上下限配置整理成非负且有序的区间"""
+        lo_v, hi_v = lo or 0, hi or 0
+        return max(0, min(lo_v, hi_v)), max(0, max(lo_v, hi_v))
+
+    async def sleep_interval(self) -> None:
+        """发送消息前的随机间隔（send_interval_min ~ send_interval_max 秒）"""
+        lo, hi = self._clamp_range(
+            self.cfg.send_interval_min, self.cfg.send_interval_max
+        )
+        if hi > 0:
+            await asyncio.sleep(random.uniform(lo, hi))
+
+    @staticmethod
+    def render_template(template: str, ctx: dict[str, Any]) -> str:
+        """按占位符渲染模板，当前解析结果未提供的占位符自动隐藏"""
+
+        # 收集模板中真实占位符（跳过 {{ }} 转义）
+        keys = {
+            field_name
+            for _, field_name, _, _ in string.Formatter().parse(template)
+            if field_name is not None
+        }
+        missing = [k for k in keys if k not in ctx]
+        if missing:
+            logger.warning(
+                f"解析文本模板包含未提供的占位符: {missing}，将自动隐藏"
+            )
+
+        class _SafeDict(dict):
+            def __missing__(self, key):
+                return ""
+
+        filled = {k: ("" if v is None or v == "" else v) for k, v in ctx.items()}
+        return template.format_map(_SafeDict(filled))
+
+    def build_parse_text(self, result: ParseResult) -> str | None:
+        """按模板构建解析文本，模板为空或渲染失败时返回 None"""
+        template = (self.cfg.parse_text_template or "").strip()
+        if not template:
+            return None
+
+        # 部分解析器（如 B 站）的 text 自带“简介: ”前缀，剥离避免重复
+        text = result.text
+        if text and text.startswith("简介:"):
+            text = text[3:].strip()
+
+        ctx: dict[str, Any] = {
+            "platform": result.platform.display_name,
+            "title": result.title,
+            "text": text,
+            "author": result.author.name if result.author else None,
+            "url": result.url,
+            "time": result.formatted_datetime(),
+        }
+        # 附加统计数据（点赞/投币/收藏等，由各解析器提供）
+        ctx.update(result.extra)
+
+        try:
+            rendered = self.render_template(template, ctx).strip()
+        except Exception as e:
+            logger.warning(f"解析文本模板渲染失败: {e}")
+            return None
+        return rendered or None
 
     def _to_file_uri(self, path: Path) -> str:
         if not path.is_absolute():
@@ -108,8 +178,13 @@ class MessageSender:
         is_image_only = not heavy and any(
             isinstance(cont, (ImageContent, GraphicsContent)) for cont in light
         )
-        render_card = (is_single_heavy and self.cfg.single_heavy_render_card) or (
-            is_image_only and self.cfg.image_render_card
+        # 卡片渲染总开关（旧配置缺该字段时默认开启）
+        master = self.cfg.render_card
+        if master is None:
+            master = True
+        render_card = master and (
+            (is_single_heavy and self.cfg.single_heavy_render_card)
+            or (is_image_only and self.cfg.image_render_card)
         )
         if render_card_override is not None:
             render_card = render_card_override
@@ -135,7 +210,7 @@ class MessageSender:
         event: AstrMessageEvent,
         result: ParseResult,
         plan: dict,
-    ):
+    ) -> bool:
         """
         发送预览卡片（独立消息）
 
@@ -143,12 +218,18 @@ class MessageSender:
         - 只有一个重媒体
         - 未触发合并转发
         - 卡片作为“预览”，不与正文混合
+
+        Returns:
+            卡片是否实际发出
         """
         if not plan["preview_card"]:
-            return
+            return False
 
         if image_path := await self.renderer.render_card(result):
+            await self.sleep_interval()
             await event.send(event.chain_result([self._image_from_path(image_path)]))
+            return True
+        return False
 
     async def _build_segments(
         self,
@@ -277,15 +358,17 @@ class MessageSender:
             render_card_override=group.render_card,
         )
 
-        await self._send_preview_card(event, result, plan)
+        preview_sent = await self._send_preview_card(event, result, plan)
 
         segs = await self._build_segments(result, plan)
         segs = self._merge_segments_if_needed(event, segs, plan["force_merge"])
 
         if not segs:
-            return False
+            # 卡片已发出则视为本组发送成功，避免再发兜底文本造成重复
+            return preview_sent
 
         try:
+            await self.sleep_interval()
             await event.send(event.chain_result(segs))
             return True
         except Exception as e:

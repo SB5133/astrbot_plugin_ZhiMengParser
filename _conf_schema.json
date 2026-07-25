@@ -96,6 +96,87 @@
         },
         "default": 70
     },
+    "render_card": {
+        "description": "渲染卡片",
+        "hint": "卡片渲染总开关，关闭后不再渲染任何简介卡片",
+        "type": "bool",
+        "default": true
+    },
+    "send_parse_text": {
+        "description": "发送解析文本",
+        "hint": "开启后，识别到链接会先发送解析提示，解析完成后再发送解析文本（标题/简介/作者/数据，格式可在下方自定义）",
+        "type": "bool",
+        "default": true
+    },
+    "detect_action": {
+        "description": "识别到链接后的行为",
+        "hint": "text=发送解析提示文字（需开启“发送解析文本”）；emoji=给该消息贴表情；none=静默不反馈",
+        "type": "select",
+        "options": ["text", "emoji", "none"],
+        "default": "text"
+    },
+    "detect_delay_min": {
+        "description": "识别反馈最小延时（秒）",
+        "hint": "识别到链接后，执行反馈行为前的随机延时下限",
+        "type": "int",
+        "slider": {
+            "min": 0,
+            "max": 30,
+            "step": 1
+        },
+        "default": 1
+    },
+    "detect_delay_max": {
+        "description": "识别反馈最大延时（秒）",
+        "hint": "识别到链接后，执行反馈行为前的随机延时上限",
+        "type": "int",
+        "slider": {
+            "min": 0,
+            "max": 60,
+            "step": 1
+        },
+        "default": 3
+    },
+    "send_interval_min": {
+        "description": "发送间隔最小值（秒）",
+        "hint": "插件连续发送多条消息（提示、卡片、媒体、解析文本）之间的随机间隔下限",
+        "type": "int",
+        "slider": {
+            "min": 0,
+            "max": 30,
+            "step": 1
+        },
+        "default": 1
+    },
+    "send_interval_max": {
+        "description": "发送间隔最大值（秒）",
+        "hint": "插件连续发送多条消息之间的随机间隔上限",
+        "type": "int",
+        "slider": {
+            "min": 0,
+            "max": 60,
+            "step": 1
+        },
+        "default": 3
+    },
+    "react_emoji_id": {
+        "description": "回应表情ID",
+        "hint": "识别行为为 emoji 时贴的表情 ID（QQ 系统表情），常用：76=赞、124=OK、289=拳头",
+        "type": "int",
+        "default": 76
+    },
+    "parsing_tip": {
+        "description": "解析提示模板",
+        "hint": "识别到链接后先发送的提示文字，可用占位符 {platform}（平台名）",
+        "type": "text",
+        "default": "正在解析{platform}，请稍等"
+    },
+    "parse_text_template": {
+        "description": "解析文本模板",
+        "hint": "解析完成后发送的文本。通用占位符：{platform}平台名 {title}标题 {text}简介 {author}作者 {url}链接 {time}发布时间。统计占位符（平台支持不同，当前解析结果未提供则自动隐藏）：{like}点赞 {favorite}收藏 {comment}评论 {share}转发 {view}播放/阅读 {danmaku}弹幕(B站) {coin}投币(B站) {reply}评论(B站，与comment同义)。支持情况：B站视频(view/danmaku/reply/comment/favorite/coin/share/like)、抖音(like/comment/favorite/share/view)、小红书(like/favorite/comment/share)、微博(like/comment/share)、快手(like/comment/share/view)、视频号(like/favorite/comment/share)。若模板包含当前平台未提供的占位符，日志会输出黄色警告。",
+        "type": "text",
+        "default": "标题:{title}\n简介:{text}\n作者:{author}\n点赞:{like}  收藏:{favorite}\n投币:{coin}  转发:{share}"
+    },
     "forward_threshold": {
         "description": "转发阈值",
         "hint": "硬性要求：解析生成的消息条数达到此阈值时，将消息合并转发",

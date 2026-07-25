@@ -1,6 +1,7 @@
 # main.py
 
 import asyncio
+import random
 import re
 
 from astrbot.api import logger
@@ -183,8 +184,13 @@ class ParserPlugin(Star):
             logger.warning(f"[链接防抖] 链接 {link} 在防抖时间内，跳过解析")
             return
 
+        parser = self.parser_map[keyword]
+
+        # 识别到链接后的反馈行为（贴表情 / 发送解析提示，带随机延时）
+        await self._detect_action(event, parser.platform.display_name)
+
         # 解析
-        parse_res = await self.parser_map[keyword].parse(keyword, searched)
+        parse_res = await parser.parse(keyword, searched)
 
         # 基于资源ID防抖
         resource_id = parse_res.get_resource_id()
@@ -192,8 +198,57 @@ class ParserPlugin(Star):
             logger.warning(f"[资源防抖] 资源 {resource_id} 在防抖时间内，跳过发送")
             return
 
+        # 发送解析文本（标题/简介/作者/数据，模板可自定义）
+        if self.cfg.send_parse_text:
+            if parse_text := self.sender.build_parse_text(parse_res):
+                await self.sender.sleep_interval()
+                await event.send(event.plain_result(parse_text))
+
         # 发送
         await self.sender.send_parse_result(event, parse_res)
+
+    async def _detect_action(self, event: AstrMessageEvent, platform_name: str):
+        """识别到链接后的反馈行为：发送解析提示或贴表情（带随机延时）"""
+        action = (self.cfg.detect_action or "none").strip().lower()
+        if action not in ("text", "emoji"):
+            return
+
+        lo, hi = MessageSender._clamp_range(
+            self.cfg.detect_delay_min, self.cfg.detect_delay_max
+        )
+        if hi > 0:
+            await asyncio.sleep(random.uniform(lo, hi))
+
+        if action == "emoji":
+            await self._react_emoji(event)
+            return
+
+        # action == "text"：解析提示受“发送解析文本”开关控制
+        if not self.cfg.send_parse_text:
+            return
+        template = (self.cfg.parsing_tip or "").strip()
+        if not template:
+            return
+        tip = MessageSender.render_template(template, {"platform": platform_name})
+        await event.send(event.plain_result(tip))
+
+    async def _react_emoji(self, event: AstrMessageEvent):
+        """给用户消息贴表情（仅 aiocqhttp 平台支持）"""
+        if not isinstance(event, AiocqhttpMessageEvent):
+            logger.debug("非 aiocqhttp 平台，跳过贴表情")
+            return
+        raw = event.message_obj.raw_message
+        if not isinstance(raw, dict) or "message_id" not in raw:
+            return
+        try:
+            await event.bot.set_msg_emoji_like(
+                message_id=int(raw["message_id"]),
+                emoji_id=self.cfg.react_emoji_id or 76,
+                emoji_type="1",
+                set=True,
+            )
+        except Exception as e:
+            logger.warning(f"贴表情失败: {e}")
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("开启解析")

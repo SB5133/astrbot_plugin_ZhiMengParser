@@ -207,7 +207,17 @@ class BilibiliParser(BaseParser):
             text=text,
             author=author,
             contents=[video_content],
-            extra={"info": ai_summary},
+            extra={
+                "info": ai_summary,
+                "view": video_info.stat.view,
+                "danmaku": video_info.stat.danmaku,
+                "reply": video_info.stat.reply,
+                "comment": video_info.stat.reply,
+                "favorite": video_info.stat.favorite,
+                "coin": video_info.stat.coin,
+                "share": video_info.stat.share,
+                "like": video_info.stat.like,
+            },
         )
 
     async def parse_dynamic(self, dynamic_id: int):

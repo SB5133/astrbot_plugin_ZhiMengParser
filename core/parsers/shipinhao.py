@@ -187,7 +187,13 @@ class ShipinhaoParser(BaseParser):
             contents=contents,
             timestamp=self._safe_int(feed_info.get("createtime")),
             url=share_url,
-            extra={"info": self._build_stats(feed_info)},
+            extra={
+                "info": self._build_stats(feed_info),
+                "like": feed_info.get("likeCountFmt"),
+                "favorite": feed_info.get("favCountFmt"),
+                "comment": feed_info.get("commentCountFmt"),
+                "share": feed_info.get("forwardCountFmt"),
+            },
         )
 
     # ---------------- 辅助 ----------------

@@ -211,6 +211,17 @@ class PluginConfig(ConfigNode):
     card_bg_blur: int
     card_glass_opacity: int
 
+    render_card: bool
+    send_parse_text: bool
+    detect_action: str
+    detect_delay_min: int
+    detect_delay_max: int
+    send_interval_min: int
+    send_interval_max: int
+    react_emoji_id: int
+    parsing_tip: str
+    parse_text_template: str
+
     show_download_fail_tip: bool
     download_timeout: int
     download_retry_times: int

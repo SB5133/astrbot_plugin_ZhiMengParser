@@ -89,6 +89,12 @@ class XHSParser(BaseParser):
             nickname: str
             avatar: str
 
+        class InteractInfo(Struct):
+            likedCount: str | None = None
+            collectedCount: str | None = None
+            commentCount: str | None = None
+            shareCount: str | None = None
+
         class NoteDetail(Struct):
             type: str
             title: str
@@ -96,6 +102,7 @@ class XHSParser(BaseParser):
             user: User
             imageList: list[Image] = field(default_factory=list)
             video: Video | None = None
+            interactInfo: InteractInfo | None = None
 
             @property
             def nickname(self) -> str:
@@ -136,7 +143,20 @@ class XHSParser(BaseParser):
             text=note_detail.desc,
             author=author,
             contents=contents,
+            extra=self._build_interact_extra(note_detail.interactInfo),
         )
+
+    @staticmethod
+    def _build_interact_extra(interact_info) -> dict:
+        """把小红书互动数据映射为统一占位符"""
+        if not interact_info:
+            return {}
+        return {
+            "like": interact_info.likedCount,
+            "favorite": interact_info.collectedCount,
+            "comment": interact_info.commentCount,
+            "share": interact_info.shareCount,
+        }
 
     async def parse_discovery(self, url: str):
         async with self.session.get(
@@ -163,6 +183,12 @@ class XHSParser(BaseParser):
             nickName: str
             avatar: str
 
+        class InteractInfo(Struct):
+            likedCount: str | None = None
+            collectedCount: str | None = None
+            commentCount: str | None = None
+            shareCount: str | None = None
+
         class NoteData(Struct):
             type: str
             title: str
@@ -172,6 +198,7 @@ class XHSParser(BaseParser):
             lastUpdateTime: int
             imageList: list[Image] = []  # 有水印
             video: Video | None = None
+            interactInfo: InteractInfo | None = None
 
             @property
             def image_urls(self) -> list[str]:
@@ -211,6 +238,7 @@ class XHSParser(BaseParser):
             contents=contents,
             text=note_data.desc,
             timestamp=note_data.time // 1000,
+            extra=self._build_interact_extra(note_data.interactInfo),
         )
 
     def _extract_initial_state_json(self, html: str) -> dict[str, Any]:

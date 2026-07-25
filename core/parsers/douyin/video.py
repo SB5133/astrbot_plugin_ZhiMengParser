@@ -37,12 +37,28 @@ class Image(Struct):
     url_list: list[str] = field(default_factory=list)
 
 
+class Statistics(Struct):
+    """统计数据（字段在部分页面可能缺失或为字符串，宽松处理）"""
+
+    digg_count: int | str | None = None
+    """点赞数"""
+    comment_count: int | str | None = None
+    """评论数"""
+    collect_count: int | str | None = None
+    """收藏数"""
+    share_count: int | str | None = None
+    """分享数"""
+    play_count: int | str | None = None
+    """播放数"""
+
+
 class VideoData(Struct):
     create_time: int
     author: Author
     desc: str
     images: list[Image] | None = None
     video: Video | None = None
+    statistics: Statistics | None = None
 
     @property
     def image_urls(self) -> list[str]:

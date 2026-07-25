@@ -89,6 +89,12 @@ class KuaiShouParser(BaseParser):
             author=author,
             contents=contents,
             timestamp=photo.timestamp // 1000,
+            extra={
+                "like": photo.like_count,
+                "comment": photo.comment_count,
+                "share": photo.forward_count,
+                "view": photo.view_count,
+            },
         )
 
 
@@ -125,6 +131,15 @@ class Photo(Struct):
     cover_urls: list[CdnUrl] = field(name="coverUrls", default_factory=list)
     main_mv_urls: list[CdnUrl] = field(name="mainMvUrls", default_factory=list)
     ext_params: ExtParams = field(name="ext_params", default_factory=ExtParams)
+
+    like_count: int | str | None = field(default=None, name="likeCount")
+    """点赞数"""
+    comment_count: int | str | None = field(default=None, name="commentCount")
+    """评论数"""
+    forward_count: int | str | None = field(default=None, name="forwardCount")
+    """转发数"""
+    view_count: int | str | None = field(default=None, name="viewCount")
+    """播放数"""
 
     @property
     def name(self) -> str:
