@@ -199,6 +199,9 @@ class ParserPlugin(Star):
             return
 
         # 发送解析文本（标题/简介/作者/数据，模板可自定义）
+        logger.debug(
+            f"[send_parse_text] 开关状态: {self.cfg.send_parse_text}"
+        )
         if self.cfg.send_parse_text:
             if parse_text := self.sender.build_parse_text(parse_res):
                 await self.sender.sleep_interval()
@@ -208,8 +211,15 @@ class ParserPlugin(Star):
         await self.sender.send_parse_result(event, parse_res)
 
     async def _detect_action(self, event: AstrMessageEvent, platform_name: str):
-        """识别到链接后的反馈行为：发送解析提示或贴表情（带随机延时）"""
+        """识别到链接后的反馈行为：发送解析提示或贴表情（带随机延时）
+
+        与 send_parse_text 解耦：detect_action 只控制识别到链接后的即时反馈，
+        send_parse_text 只控制解析完成后是否发送解析文本。
+        """
         action = (self.cfg.detect_action or "none").strip().lower()
+        logger.debug(
+            f"[detect_action] 当前配置: {action}, send_parse_text: {self.cfg.send_parse_text}"
+        )
         if action not in ("text", "emoji"):
             return
 
@@ -223,13 +233,13 @@ class ParserPlugin(Star):
             await self._react_emoji(event)
             return
 
-        # action == "text"：解析提示受“发送解析文本”开关控制
-        if not self.cfg.send_parse_text:
-            return
+        # action == "text"：发送解析提示
         template = (self.cfg.parsing_tip or "").strip()
         if not template:
+            logger.debug("[detect_action] parsing_tip 为空，跳过解析提示")
             return
         tip = MessageSender.render_template(template, {"platform": platform_name})
+        logger.debug(f"[detect_action] 发送解析提示: {tip}")
         await event.send(event.plain_result(tip))
 
     async def _react_emoji(self, event: AstrMessageEvent):

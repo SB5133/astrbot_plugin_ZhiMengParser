@@ -104,13 +104,13 @@
     },
     "send_parse_text": {
         "description": "发送解析文本",
-        "hint": "开启后，识别到链接会先发送解析提示，解析完成后再发送解析文本（标题/简介/作者/数据，格式可在下方自定义）",
+        "hint": "开启后，解析完成会发送解析文本（标题/简介/作者/数据，格式可在下方自定义）。识别到链接后的即时提示由「识别到链接后的行为」独立控制。",
         "type": "bool",
         "default": true
     },
     "detect_action": {
         "description": "识别到链接后的行为",
-        "hint": "text=发送解析提示文字（需开启“发送解析文本”）；emoji=给该消息贴表情；none=静默不反馈",
+        "hint": "text=识别到链接后立即发送解析提示文字；emoji=给该消息贴表情；none=静默不反馈。与下方「发送解析文本」互不干扰。",
         "type": "string",
         "options": ["text", "emoji", "none"],
         "default": "text"
