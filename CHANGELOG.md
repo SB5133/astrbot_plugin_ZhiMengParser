@@ -19,7 +19,7 @@
 
 ## v1.0.0
 
-插件更名为 **astrbot_plugin_ZhiMengParser**，由稚梦接手维护后的首个版本。
+插件更名为 **astrbot_plugin_ZhiMengParser**，由稚梦爆改后的首个版本。
 
 ### 新增
 
