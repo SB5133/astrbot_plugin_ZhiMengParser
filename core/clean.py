@@ -23,17 +23,21 @@ class CacheCleaner:
 
         self.register_task()
 
-        logger.info(f"{self.JOBNAME} 已启动，任务周期：{self.cfg.clean_cron}")
-
     def register_task(self):
+        cron = (self.cfg.clean_cron or "").strip()
+        if not cron:
+            logger.info(f"[{self.JOBNAME}] clean_cron 为空，跳过自动清理任务")
+            return
+
         try:
-            self.trigger = CronTrigger.from_crontab(self.cfg.clean_cron)
+            self.trigger = CronTrigger.from_crontab(cron)
             self.scheduler.add_job(
                 func=self._clean_plugin_cache,
                 trigger=self.trigger,
                 name=f"{self.JOBNAME}_scheduler",
                 max_instances=1,
             )
+            logger.info(f"[{self.JOBNAME}] 已启动，任务周期：{cron}")
         except Exception as e:
             logger.error(f"[{self.JOBNAME}] Cron 格式错误：{e}")
 
