@@ -122,6 +122,8 @@ class MessageSender:
         except Exception as e:
             logger.warning(f"解析文本模板渲染失败: {e}")
             return None
+
+        self.cfg.verbose(f"解析文本已生成: {rendered[:120]!r}")
         return rendered or None
 
     def _to_file_uri(self, path: Path) -> str:
@@ -308,6 +310,7 @@ class MessageSender:
         event: AstrMessageEvent,
         segs: list[BaseMessageComponent],
         force_merge: bool,
+        parser_tip: list[BaseMessageComponent] | None = None,
     ) -> list[BaseMessageComponent]:
         """
         根据策略决定是否将消息段合并为转发节点
@@ -315,12 +318,18 @@ class MessageSender:
         合并后的消息结构：
         - 每个原始消息段成为一个 Node
         - 统一使用机器人自身身份
+        - 若提供了解析提示（parser_tip），会作为第一个节点插入
         """
-        if not force_merge or not segs:
+        if not force_merge:
+            return segs
+        if not segs and not parser_tip:
             return segs
 
         nodes = Nodes([])
         self_id = event.get_self_id()
+
+        if parser_tip:
+            nodes.nodes.append(Node(uin=self_id, name="解析器", content=parser_tip))
 
         for seg in segs:
             nodes.nodes.append(Node(uin=self_id, name="解析器", content=[seg]))
@@ -350,6 +359,7 @@ class MessageSender:
         event: AstrMessageEvent,
         result: ParseResult,
         group: SendGroup,
+        parser_tip: list[BaseMessageComponent] | None = None,
     ) -> bool:
         plan = self._build_send_plan(
             result,
@@ -358,10 +368,28 @@ class MessageSender:
             render_card_override=group.render_card,
         )
 
+        seg_count = len(plan["light"]) + len(plan["heavy"]) + (
+            1 if plan["render_card"] else 0
+        )
+        self.cfg.verbose(
+            f"发送计划: light={len(plan['light'])}, heavy={len(plan['heavy'])}, "
+            f"seg_count={seg_count}, forward_threshold={self.cfg.forward_threshold}, "
+            f"force_merge={plan['force_merge']}, render_card={plan['render_card']}, "
+            f"has_parser_tip={bool(parser_tip)}"
+        )
+
+        # 若未触发合并转发，缓存的解析提示作为普通消息先发出去
+        if parser_tip and not plan["force_merge"]:
+            await self.sleep_interval()
+            await event.send(event.chain_result(parser_tip))
+            parser_tip = None
+
         preview_sent = await self._send_preview_card(event, result, plan)
 
         segs = await self._build_segments(result, plan)
-        segs = self._merge_segments_if_needed(event, segs, plan["force_merge"])
+        segs = self._merge_segments_if_needed(
+            event, segs, plan["force_merge"], parser_tip
+        )
 
         if not segs:
             # 卡片已发出则视为本组发送成功，避免再发兜底文本造成重复
@@ -370,6 +398,7 @@ class MessageSender:
         try:
             await self.sleep_interval()
             await event.send(event.chain_result(segs))
+            self.cfg.verbose(f"本组消息已发送: {self._collect_seg_meta(segs)}")
             return True
         except Exception as e:
             seg_meta = self._collect_seg_meta(segs)
@@ -396,6 +425,7 @@ class MessageSender:
         self,
         event: AstrMessageEvent,
         result: ParseResult,
+        parser_tip: list[BaseMessageComponent] | None = None,
     ):
         """
         发送解析结果的统一入口
@@ -406,12 +436,17 @@ class MessageSender:
         3. 构建消息段
         4. 必要时合并转发
         5. 最终发送
+
+        Args:
+            parser_tip: 识别到链接时缓存的解析提示消息段，仅会合并到第一组转发中
         """
         groups = self._resolve_groups(result)
+        self.cfg.verbose(f"解析结果分组数: {len(groups)}")
 
         sent = False
-        for group in groups:
-            sent = await self._send_group(event, result, group) or sent
+        for idx, group in enumerate(groups):
+            tip = parser_tip if idx == 0 else None
+            sent = await self._send_group(event, result, group, parser_tip=tip) or sent
 
         if not sent:
             segs = self._build_text_fallback(result)
@@ -420,7 +455,9 @@ class MessageSender:
                 return
 
             try:
+                await self.sleep_interval()
                 await event.send(event.chain_result(segs))
+                self.cfg.verbose("已发送兜底文本")
             except Exception as e:
                 seg_meta = self._collect_seg_meta(segs)
                 logger.error(f"发送解析结果失败： error={e}, segments={seg_meta}")

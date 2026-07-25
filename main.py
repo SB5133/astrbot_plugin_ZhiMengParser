@@ -8,7 +8,7 @@ from astrbot.api import logger
 from astrbot.api.event import filter
 from astrbot.api.star import Context, Star
 from astrbot.core import AstrBotConfig
-from astrbot.core.message.components import At, Image, Json
+from astrbot.core.message.components import At, Image, Json, Plain, Reply
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
 from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
     AiocqhttpMessageEvent,
@@ -76,7 +76,7 @@ class ParserPlugin(Star):
             platform_name = cls.platform.name
 
             if platform_name not in enabled_platforms:
-                logger.debug(f"[parser] 平台未启用或未配置: {platform_name}")
+                self.cfg.verbose(f"[parser] 平台未启用或未配置: {platform_name}")
                 continue
 
             enabled_classes.append(cls)
@@ -89,7 +89,7 @@ class ParserPlugin(Star):
             for keyword, _ in cls._key_patterns:
                 self.parser_map[keyword] = parser
 
-        logger.debug(f"启用平台: {'、'.join(enabled_names) if enabled_names else '无'}")
+        self.cfg.verbose(f"启用平台: {'、'.join(enabled_names) if enabled_names else '无'}")
 
         # -------- 关键词-正则表（统一生成） --------
         patterns: list[tuple[str, re.Pattern[str]]] = []
@@ -103,7 +103,7 @@ class ParserPlugin(Star):
 
         self.key_pattern_list = patterns
 
-        logger.debug(f"[parser] 关键词-正则对已生成: {[kw for kw, _ in patterns]}")
+        self.cfg.verbose(f"[parser] 关键词-正则对已生成: {[kw for kw, _ in patterns]}")
 
     def _get_parser_by_type(self, parser_type):
         for parser in self.parser_map.values():
@@ -118,10 +118,12 @@ class ParserPlugin(Star):
 
         # 白名单
         if self.cfg.whitelist and umo not in self.cfg.whitelist:
+            self.cfg.verbose(f"会话 {umo} 不在白名单，跳过")
             return
 
         # 黑名单
         if self.cfg.blacklist and umo in self.cfg.blacklist:
+            self.cfg.verbose(f"会话 {umo} 在黑名单，跳过")
             return
 
         # 消息链
@@ -135,10 +137,12 @@ class ParserPlugin(Star):
         # 卡片解析：解析Json组件，提取URL
         if isinstance(seg1, Json):
             text = extract_json_url(seg1.data)
-            logger.debug(f"解析Json组件: {text}")
+            self.cfg.verbose(f"解析Json组件: {text}")
 
         if not text:
             return
+
+        self.cfg.verbose(f"收到消息: {text[:120]!r}, umo={umo}")
 
         self_id = event.get_self_id()
 
@@ -156,8 +160,10 @@ class ParserPlugin(Star):
                 keyword, searched = kw, m
                 break
         if searched is None:
+            self.cfg.verbose(f"未匹配到支持的链接: {text[:120]!r}")
             return
-        logger.debug(f"匹配结果: {keyword}, {searched}")
+        link = searched.group(0)
+        self.cfg.verbose(f"匹配到平台: {keyword}, 链接: {link}")
 
         # 仲裁机制
         if isinstance(event, AiocqhttpMessageEvent) and not event.is_private_chat():
@@ -174,17 +180,17 @@ class ParserPlugin(Star):
                 ),
             )
             if not is_win:
-                logger.debug("Bot在仲裁中输了, 跳过解析")
+                self.cfg.verbose("Bot在仲裁中输了, 跳过解析")
                 return
-            logger.debug("Bot在仲裁中胜出, 准备解析...")
+            self.cfg.verbose("Bot在仲裁中胜出, 准备解析...")
 
         # 基于link防抖
-        link = searched.group(0)
         if self.debouncer.hit_link(umo, link):
             logger.warning(f"[链接防抖] 链接 {link} 在防抖时间内，跳过解析")
             return
 
         parser = self.parser_map[keyword]
+        self.cfg.verbose(f"选用解析器: {parser.platform.display_name}")
 
         # 识别到链接后的反馈行为（贴表情 / 发送解析提示，带随机延时）
         await self._detect_action(event, parser.platform.display_name)
@@ -199,7 +205,7 @@ class ParserPlugin(Star):
             return
 
         # 发送解析文本（标题/简介/作者/数据，模板可自定义）
-        logger.debug(
+        self.cfg.verbose(
             f"[send_parse_text] 开关状态: {self.cfg.send_parse_text}"
         )
         if self.cfg.send_parse_text:
@@ -207,20 +213,39 @@ class ParserPlugin(Star):
                 await self.sender.sleep_interval()
                 await event.send(event.plain_result(parse_text))
 
-        # 发送
-        await self.sender.send_parse_result(event, parse_res)
+        # 发送解析结果（媒体/卡片等），同时传入缓存的解析提示用于合并套娃
+        parser_tip = getattr(event, "_parser_tip", None)
+        await self.sender.send_parse_result(event, parse_res, parser_tip=parser_tip)
+
+        # 解析完成后@用户 + 自定义文本（可选）
+        if self.cfg.at_after_parse:
+            await self._send_after_parse_at(event, parse_res)
+
+    @staticmethod
+    def _get_source_message_id(event: AstrMessageEvent) -> int | str | None:
+        """获取用户原消息的消息ID，用于引用回复"""
+        raw = getattr(event.message_obj, "raw_message", None)
+        if isinstance(raw, dict) and "message_id" in raw:
+            return raw["message_id"]
+        return getattr(event.message_obj, "message_id", None)
 
     async def _detect_action(self, event: AstrMessageEvent, platform_name: str):
         """识别到链接后的反馈行为：发送解析提示或贴表情（带随机延时）
 
         与 send_parse_text 解耦：detect_action 只控制识别到链接后的即时反馈，
         send_parse_text 只控制解析完成后是否发送解析文本。
+
+        新增行为：
+        - merge_parsing_tip: 缓存提示，后续合并到转发结果中
+        - quote_on_detect: text 提示引用用户原消息
         """
         action = (self.cfg.detect_action or "none").strip().lower()
-        logger.debug(
-            f"[detect_action] 当前配置: {action}, send_parse_text: {self.cfg.send_parse_text}"
+        self.cfg.verbose(
+            f"[detect_action] 当前配置: {action}, send_parse_text: {self.cfg.send_parse_text}, "
+            f"merge_parsing_tip={self.cfg.merge_parsing_tip}, quote_on_detect={self.cfg.quote_on_detect}"
         )
         if action not in ("text", "emoji"):
+            self.cfg.verbose("识别反馈行为为 none，不发送即时反馈")
             return
 
         lo, hi = MessageSender._clamp_range(
@@ -236,16 +261,29 @@ class ParserPlugin(Star):
         # action == "text"：发送解析提示
         template = (self.cfg.parsing_tip or "").strip()
         if not template:
-            logger.debug("[detect_action] parsing_tip 为空，跳过解析提示")
+            self.cfg.verbose("[detect_action] parsing_tip 为空，跳过解析提示")
             return
         tip = MessageSender.render_template(template, {"platform": platform_name})
-        logger.debug(f"[detect_action] 发送解析提示: {tip}")
-        await event.send(event.plain_result(tip))
+        self.cfg.verbose(f"[detect_action] 生成解析提示: {tip}")
+
+        tip_chain: list[BaseMessageComponent] = []
+        msg_id = self._get_source_message_id(event)
+        if self.cfg.quote_on_detect and msg_id is not None:
+            tip_chain.append(Reply(id=msg_id))
+            self.cfg.verbose(f"解析提示将引用用户消息 ID: {msg_id}")
+        tip_chain.append(Plain(tip))
+
+        if self.cfg.merge_parsing_tip:
+            self.cfg.verbose("解析提示已缓存，将合并到转发结果中（套娃）")
+            event._parser_tip = tip_chain
+            return
+
+        await event.send(event.chain_result(tip_chain))
 
     async def _react_emoji(self, event: AstrMessageEvent):
         """给用户消息贴表情（仅 aiocqhttp 平台支持）"""
         if not isinstance(event, AiocqhttpMessageEvent):
-            logger.debug("非 aiocqhttp 平台，跳过贴表情")
+            self.cfg.verbose("非 aiocqhttp 平台，跳过贴表情")
             return
         raw = event.message_obj.raw_message
         if not isinstance(raw, dict) or "message_id" not in raw:
@@ -259,6 +297,47 @@ class ParserPlugin(Star):
             )
         except Exception as e:
             logger.warning(f"贴表情失败: {e}")
+
+    async def _send_after_parse_at(
+        self, event: AstrMessageEvent, parse_res
+    ):
+        """解析完成后发送 @用户 + 自定义文本，并引用用户发送的链接"""
+        template = (self.cfg.at_after_parse_text or "").strip()
+        if not template:
+            self.cfg.verbose("[at_after_parse] 自定义文本为空，跳过")
+            return
+
+        user_id = event.get_sender_id()
+        user_name = event.get_sender_name()
+        if not user_id:
+            logger.warning("[at_after_parse] 无法获取发送者ID，跳过")
+            return
+
+        ctx = {
+            "platform": parse_res.platform.display_name,
+            "title": parse_res.title,
+            "author": parse_res.author.name if parse_res.author else None,
+            "user_name": user_name,
+            "user_id": user_id,
+        }
+        text = MessageSender.render_template(template, ctx).strip()
+        if not text:
+            self.cfg.verbose("[at_after_parse] 渲染后文本为空，跳过")
+            return
+
+        self.cfg.verbose(f"[at_after_parse] 发送 @用户 消息: {text}")
+
+        segs: list[BaseMessageComponent] = [At(qq=user_id, name=user_name), Plain(text)]
+        msg_id = self._get_source_message_id(event)
+        if msg_id is not None:
+            segs.insert(0, Reply(id=msg_id))
+            self.cfg.verbose(f"[at_after_parse] 引用用户消息 ID: {msg_id}")
+
+        await self.sender.sleep_interval()
+        try:
+            await event.send(event.chain_result(segs))
+        except Exception as e:
+            logger.warning(f"[at_after_parse] 发送失败: {e}")
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("开启解析")

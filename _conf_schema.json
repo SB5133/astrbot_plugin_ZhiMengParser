@@ -11,6 +11,12 @@
         "type": "list",
         "default": []
     },
+    "verbose_logging": {
+        "description": "详细日志",
+        "hint": "开启后，插件会在日志中详细记录每一步操作（匹配、仲裁、防抖、发送计划、转发合并等），方便排查问题",
+        "type": "bool",
+        "default": false
+    },
     "arbiter": {
         "description": "仲裁机制",
         "hint": "仲裁机制：一个确保群内只有一个 Bot 对链接进行解析的机制，利用 QQ 贴表情来实现。 注意：此开关无效，所有插件使用者强制启用仲裁机制，以确保所有 Bot 遵循本插件的仲裁协议",
@@ -114,6 +120,30 @@
         "type": "string",
         "options": ["text", "emoji", "none"],
         "default": "text"
+    },
+    "merge_parsing_tip": {
+        "description": "解析提示合并为套娃",
+        "hint": "开启后，识别到链接时发送的解析提示文字不会单独发出，而是作为合并转发消息的第一个节点与解析结果一起套娃发出（需达到转发阈值）",
+        "type": "bool",
+        "default": false
+    },
+    "quote_on_detect": {
+        "description": "解析提示引用原链接",
+        "hint": "开启text识别反馈时，解析提示文字会引用用户发送的链接消息（QQ平台效果最佳）",
+        "type": "bool",
+        "default": false
+    },
+    "at_after_parse": {
+        "description": "解析完成后@用户",
+        "hint": "解析完成后，额外发送一条@用户的消息，内容使用下方自定义文本，并引用用户发送的链接",
+        "type": "bool",
+        "default": false
+    },
+    "at_after_parse_text": {
+        "description": "解析完成后@用户的文本",
+        "hint": "解析完成后@用户时附加的文本。可用占位符：{platform}平台名 {title}标题 {author}作者 {user_name}用户昵称 {user_id}用户ID",
+        "type": "text",
+        "default": "{platform}解析完成啦~"
     },
     "detect_delay_min": {
         "description": "识别反馈最小延时（秒）",

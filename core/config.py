@@ -199,6 +199,8 @@ class PluginConfig(ConfigNode):
     arbiter: bool
     debounce_interval: int
 
+    verbose_logging: bool
+
     source_max_size: int
     source_max_minute: int
 
@@ -214,6 +216,10 @@ class PluginConfig(ConfigNode):
     render_card: bool
     send_parse_text: bool
     detect_action: str
+    merge_parsing_tip: bool
+    quote_on_detect: bool
+    at_after_parse: bool
+    at_after_parse_text: str
     detect_delay_min: int
     detect_delay_max: int
     send_interval_min: int
@@ -271,6 +277,13 @@ class PluginConfig(ConfigNode):
             self.save_config()
 
         self.parser = ParserConfig(self.parsers_template)
+
+    def verbose(self, message: str) -> None:
+        """详细日志输出。开启 verbose_logging 时使用 INFO 级别，否则使用 DEBUG 级别。"""
+        if self.verbose_logging:
+            logger.info(f"[ZhiMengParser|详细] {message}")
+        else:
+            logger.debug(f"[ZhiMengParser] {message}")
 
     @staticmethod
     def load_parser_template(file: Path) -> list[dict[str, Any]]:
