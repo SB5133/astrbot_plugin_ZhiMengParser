@@ -405,6 +405,9 @@ class MessageSender:
             f"has_parser_tip={bool(parser_tip)}, has_parse_text={bool(parse_text_segments)}"
         )
 
+        # 记录本组是否已发送任何内容（提示、解析文本、卡片、媒体均计入）
+        sent_any = False
+
         # 若未触发合并转发，缓存的解析提示 / 解析文本作为普通消息先发出
         if not plan["force_merge"]:
             if parser_tip:
@@ -414,6 +417,8 @@ class MessageSender:
                         self._add_reply_to_first(parser_tip, merge_quote_id)
                     )
                 )
+                self.cfg.verbose("解析提示已单独发送")
+                sent_any = True
                 parser_tip = None
             if parse_text_segments:
                 await self.sleep_interval()
@@ -422,9 +427,13 @@ class MessageSender:
                         self._add_reply_to_first(parse_text_segments, merge_quote_id)
                     )
                 )
+                self.cfg.verbose("解析文本已单独发送")
+                sent_any = True
                 parse_text_segments = None
 
         preview_sent = await self._send_preview_card(event, result, plan)
+        if preview_sent:
+            sent_any = True
 
         segs = await self._build_segments(result, plan)
         segs = self._merge_segments_if_needed(
@@ -437,8 +446,9 @@ class MessageSender:
         )
 
         if not segs:
-            # 卡片已发出则视为本组发送成功，避免再发兜底文本造成重复
-            return preview_sent
+            # 无媒体段，但提示/解析文本/卡片已发出时仍视为成功，避免兜底文本重复
+            self.cfg.verbose(f"本组无媒体段，已发送内容={sent_any}")
+            return sent_any
 
         try:
             await self.sleep_interval()
@@ -448,7 +458,8 @@ class MessageSender:
         except Exception as e:
             seg_meta = self._collect_seg_meta(segs)
             logger.error(f"发送解析结果失败： error={e}, segments={seg_meta}")
-            return False
+            # 发送失败时，如果之前已发送过提示/解析文本/卡片，仍视为本组有成功输出
+            return sent_any
 
     @staticmethod
     def _collect_seg_meta(segs: list[BaseMessageComponent]) -> list[dict[str, str]]:
@@ -473,6 +484,7 @@ class MessageSender:
         parser_tip: list[BaseMessageComponent] | None = None,
         parse_text_segments: list[BaseMessageComponent] | None = None,
         merge_quote_id: int | str | None = None,
+        parse_text_already_sent: bool = False,
     ):
         """
         发送解析结果的统一入口
@@ -488,6 +500,8 @@ class MessageSender:
             parser_tip: 识别到链接时缓存的解析提示消息段，仅会合并到第一组转发中
             parse_text_segments: 解析完成后的解析文本消息段，仅会合并到第一组转发中
             merge_quote_id: 合并套娃要引用的原消息 ID，None 表示不引用
+            parse_text_already_sent: 解析文本是否已在主流程中单独发送；
+                为 True 时，若后续无内容可发，不再触发兜底文本，避免重复
         """
         groups = self._resolve_groups(result)
         self.cfg.verbose(f"解析结果分组数: {len(groups)}")
@@ -507,6 +521,11 @@ class MessageSender:
                 )
                 or sent
             )
+
+        # 主流程已单独发送过解析文本，等价于已发送内容
+        if parse_text_already_sent:
+            self.cfg.verbose("主流程已单独发送解析文本，兜底文本跳过")
+            sent = True
 
         if not sent:
             segs = self._build_text_fallback(result)

@@ -253,6 +253,7 @@ class ParserPlugin(Star):
         # 发送解析文本（标题/简介/作者/数据，模板可自定义）
         cfg.verbose(f"[send_parse_text] 开关状态: {cfg.send_parse_text}")
         parse_text_segments: list[BaseMessageComponent] | None = None
+        parse_text_already_sent = False
         if cfg.send_parse_text:
             parse_text = sender.build_parse_text(parse_res)
             if parse_text:
@@ -262,6 +263,8 @@ class ParserPlugin(Star):
                 else:
                     await sender.sleep_interval()
                     await event.send(event.plain_result(parse_text))
+                    parse_text_already_sent = True
+                    cfg.verbose("解析文本已单独发送")
 
         # 发送解析结果（媒体/卡片等），同时传入缓存的解析提示与解析文本用于合并套娃
         parser_tip = getattr(event, "_parser_tip", None)
@@ -272,6 +275,7 @@ class ParserPlugin(Star):
             parser_tip=parser_tip,
             parse_text_segments=parse_text_segments,
             merge_quote_id=merge_quote_id,
+            parse_text_already_sent=parse_text_already_sent,
         )
 
         # 解析完成后@用户 + 自定义文本（可选，不合并）
