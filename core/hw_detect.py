@@ -274,12 +274,13 @@ class HardwareDetector:
             return
         _, out, err = await self._run_cmd(["ffmpeg", "-hide_banner", "-encoders"])
         text = out + err
+        # ffmpeg -encoders 输出格式：前缀 1 位类型 + 5 位能力标志（如 V....D、V.....），再跟空格和编码器名
         targets = {
-            "libx264": r"V\.\.\.\.\s+libx264",
-            "h264_nvenc": r"V\.\.\.\.\s+h264_nvenc",
-            "h264_qsv": r"V\.\.\.\.\s+h264_qsv",
-            "h264_amf": r"V\.\.\.\.\s+h264_amf",
-            "h264_mediacodec": r"V\.\.\.\.\s+h264_mediacodec",
+            "libx264": r"V[\.\w]{5}\s+libx264",
+            "h264_nvenc": r"V[\.\w]{5}\s+h264_nvenc",
+            "h264_qsv": r"V[\.\w]{5}\s+h264_qsv",
+            "h264_amf": r"V[\.\w]{5}\s+h264_amf",
+            "h264_mediacodec": r"V[\.\w]{5}\s+h264_mediacodec",
         }
         for encoder, pattern in targets.items():
             if re.search(pattern, text):
