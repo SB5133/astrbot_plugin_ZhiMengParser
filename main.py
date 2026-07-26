@@ -24,9 +24,11 @@ from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
 from .core.arbiter import ArbiterContext, EmojiLikeArbiter
 from .core.cache import RenderCacheManager
 from .core.clean import CacheCleaner
+from .core.compress import VideoCompressor
 from .core.config import PluginConfig
 from .core.debounce import Debouncer
 from .core.download import Downloader
+from .core.hw_detect import HardwareDetector
 from .core.parsers import BaseParser, BilibiliParser
 from .core.render import Renderer
 from .core.sender import MessageSender
@@ -67,6 +69,20 @@ class ParserPlugin(Star):
         await asyncio.to_thread(Renderer.load_resources)
         # 注册解析器
         self._register_parser()
+        # 异步硬件检测（结果仅输出到日志）
+        try:
+            detector = HardwareDetector()
+            hw_info = await detector.detect()
+            detector.log_summary()
+            self.cfg.compressor = VideoCompressor(hw_info, self.cfg)
+            # 若检测到手机端且用户未手动调整，给出提示
+            if hw_info.is_mobile and self.cfg.video_compress_enable:
+                logger.warning(
+                    "[VideoCompress] 检测到手机/Termux/Android 环境，建议关闭视频压缩或选择 mediacodec 编码器"
+                )
+        except Exception as e:
+            logger.exception(f"[VideoCompress] 硬件检测初始化失败: {e}")
+            self.cfg.compressor = None
 
     async def terminate(self):
         """插件卸载时触发"""

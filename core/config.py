@@ -271,6 +271,16 @@ class PluginConfig(ConfigNode):
     source_max_size: int
     source_max_minute: int
 
+    video_compress_enable: bool
+    video_compress_quality_mode: str
+    video_compress_encoder: str
+    video_compress_custom_preset: str
+    video_compress_custom_resolution: str
+    video_compress_custom_audio_bitrate: str
+    video_compress_custom_fps: str
+    video_compress_custom_threads: int
+    video_compress_custom_bitrate: str
+
     audio_to_file: bool
     single_heavy_render_card: bool
     image_render_card: bool
@@ -381,6 +391,9 @@ class PluginConfig(ConfigNode):
                     self._group_overrides[gid] = overrides
             except Exception as e:
                 logger.warning(f"[group_overrides] 解析群配置失败: {e}, node={node}")
+
+        # ---------- 视频压缩器占位，由 main.py 在 initialize 中异步初始化 ----------
+        self.compressor: Any | None = None
 
     def verbose(self, message: str) -> None:
         """详细日志输出。开启 verbose_logging 时使用 INFO 级别，否则使用 DEBUG 级别。"""

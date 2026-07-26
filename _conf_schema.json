@@ -85,6 +85,69 @@
         },
         "default": 15
     },
+    "video_compress_enable": {
+        "description": "启用视频压缩",
+        "hint": "视频压缩总开关，默认关闭。开启后下载的视频会在发送前自动压缩，减少文件大小",
+        "type": "bool",
+        "default": false
+    },
+    "video_compress_quality_mode": {
+        "description": "压缩品质模式",
+        "hint": "画质优先=更小压缩率但画质更好；平衡=兼顾画质与速度；速度优先=更快压缩、更小文件；自定义=开放下方高级参数",
+        "type": "string",
+        "options": ["quality", "balance", "speed", "custom"],
+        "default": "balance"
+    },
+    "video_compress_encoder": {
+        "description": "视频编码方式",
+        "hint": "自动检测推荐=根据启动时硬件检测结果选择；CPU软件编码=兼容性最好；GPU硬件加速=需对应显卡和ffmpeg支持；手机端硬件加速=仅Android/Termux环境",
+        "type": "string",
+        "options": ["auto", "cpu", "nvenc", "qsv", "amf", "mediacodec"],
+        "default": "auto"
+    },
+    "video_compress_custom_preset": {
+        "description": "自定义编码速度预设",
+        "hint": "自定义模式下生效。不同编码器会映射到对应预设值",
+        "type": "string",
+        "options": ["ultrafast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow"],
+        "default": "medium"
+    },
+    "video_compress_custom_resolution": {
+        "description": "自定义输出分辨率",
+        "hint": "自定义模式下生效。可选 original/720p/540p/360p，也可手动输入如 1920x1080",
+        "type": "string",
+        "default": "original"
+    },
+    "video_compress_custom_audio_bitrate": {
+        "description": "自定义音频码率",
+        "hint": "自定义模式下生效",
+        "type": "string",
+        "options": ["32k", "64k", "96k", "128k"],
+        "default": "128k"
+    },
+    "video_compress_custom_fps": {
+        "description": "自定义输出帧率",
+        "hint": "自定义模式下生效。original=保持原始帧率，也可输入如 30fps",
+        "type": "string",
+        "default": "original"
+    },
+    "video_compress_custom_threads": {
+        "description": "自定义编码线程数",
+        "hint": "自定义模式下且使用 CPU 编码时生效。0=自动，>0=指定线程数",
+        "type": "int",
+        "slider": {
+            "min": 0,
+            "max": 32,
+            "step": 1
+        },
+        "default": 0
+    },
+    "video_compress_custom_bitrate": {
+        "description": "自定义 MediaCodec 视频码率",
+        "hint": "自定义模式下且编码方式为 mediacodec 时生效。例如 2M、4M，留空使用品质模式默认值",
+        "type": "string",
+        "default": ""
+    },
     "audio_to_file": {
         "description": "音频以文件形式上传",
         "hint": "是否将解析到的音频文件用文件形式上传，而不是语音形式",

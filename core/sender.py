@@ -144,6 +144,17 @@ class MessageSender:
     def _record_from_path(path: Path) -> Record:
         return Record.fromFileSystem(str(path))
 
+    async def _maybe_compress(self, path: Path) -> Path:
+        """如开启视频压缩则对视频进行压缩，失败时回退原文件"""
+        compressor = getattr(self.cfg, "compressor", None)
+        if not compressor or not compressor.enabled:
+            return path
+        try:
+            return await compressor.compress(path)
+        except Exception as e:
+            logger.error(f"[MessageSender] 视频压缩失败，使用原文件: {e}")
+            return path
+
     @staticmethod
     def _iter_contents(result: ParseResult):
         return chain(result.contents, result.repost.contents if result.repost else ())
@@ -293,7 +304,10 @@ class MessageSender:
                 continue
 
             match cont:
-                case VideoContent() | DynamicContent():
+                case VideoContent():
+                    compressed_path = await self._maybe_compress(path)
+                    segs.append(self._video_from_path(compressed_path))
+                case DynamicContent():
                     segs.append(self._video_from_path(path))
                 case AudioContent():
                     segs.append(

@@ -1,5 +1,28 @@
 # 更新日志
 
+## v1.5.0
+
+### 新增
+
+- 视频压缩功能（独立总开关 `video_compress_enable`，默认关闭）：
+  - 四档品质模式：`quality`（画质优先）、`balance`（平衡）、`speed`（速度优先）、`custom`（自定义）
+  - 五种编码方式：`auto`（自动检测推荐）、`cpu`（libx264）、`nvenc`（NVIDIA NVENC）、`qsv`（Intel QSV）、`amf`（AMD AMF）、`mediacodec`（手机端）
+  - 插件启动时自动运行硬件检测（`core/hw_detect.py`），结果仅输出到日志：
+    - CPU 型号、核心数、AVX/AVX2 支持情况
+    - 显卡型号、/dev/dri 设备、VA-API 驱动状态
+    - ffmpeg 可用编码器列表（libx264/h264_nvenc/h264_qsv/h264_amf/h264_mediacodec）
+  - 编码器不可用时以 ERROR 级别输出原因与检测结果，并自动回退到 CPU 软件编码
+  - 根据硬件自动推荐默认配置：高性能显卡默认画质优先+硬件编码；老旧 CPU 默认速度优先+CPU；手机端提示关闭或选择 mediacodec
+- 自定义模式下开放高级参数：
+  - 编码速度预设（preset，通用 8 档，自动映射到各编码器对应预设）
+  - 分辨率缩放（original/720p/540p/360p 快捷选项，支持手动输入如 1920x1080）
+  - 音频码率（32k/64k/96k/128k）
+  - 帧率（original 或指定如 30fps）
+  - CPU 编码线程数（0=自动）
+  - MediaCodec 自定义视频码率
+- 新增 `core/compress.py`：`VideoCompressor` 负责动态生成 ffmpeg 命令、执行压缩、失败回退；每种编码器均有独立的品质参数映射表
+- 发送阶段（`core/sender.py`）对 `VideoContent` 自动调用压缩，失败时使用原视频
+
 ## v1.4.9
 
 ### 优化
