@@ -1,5 +1,14 @@
 # 更新日志
 
+## v1.5.1
+
+### 修复
+
+- 修复插件加载时 `bilibili_api` 初始化 `curl_cffi` 客户端失败的问题：
+  - 将 `select_client("curl_cffi")` 与 `request_settings.set("impersonate", "chrome131")` 从模块顶层移至 `BilibiliParser.__init__` 中延迟执行
+  - 模块导入阶段不再触发网络客户端初始化，避免 pip 依赖尚未就绪时即导入相关模块
+  - 当 `curl_cffi` 不可用时，自动回退到 `aiohttp` 客户端并输出 WARN 日志；若两者均不可用则抛出异常并记录 ERROR 日志
+
 ## v1.5.0
 
 ### 新增

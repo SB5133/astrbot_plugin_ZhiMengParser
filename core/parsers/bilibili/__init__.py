@@ -20,11 +20,40 @@ from ..base import (
 )
 from .login import BilibiliLogin
 
-# 选择客户端
-select_client("curl_cffi")
-# 模拟浏览器，第二参数数值参考 curl_cffi 文档
-# https://curl-cffi.readthedocs.io/en/latest/impersonate.html
-request_settings.set("impersonate", "chrome131")
+# 避免在模块导入时初始化网络客户端，防止 pip 安装依赖尚未就绪时触发导入异常。
+_client_initialized: bool = False
+_client_fallback: str | None = None
+
+
+def _ensure_bilibili_client():
+    """延迟初始化 bilibili_api 网络客户端，失败时自动回退。"""
+    global _client_initialized, _client_fallback
+    if _client_initialized:
+        return
+
+    # 优先使用 curl_cffi 以获得更好的反爬能力
+    try:
+        select_client("curl_cffi")
+        request_settings.set("impersonate", "chrome131")
+        _client_fallback = None
+        logger.info("[BilibiliParser] 已启用 curl_cffi 客户端")
+    except Exception as exc:
+        logger.warning(
+            f"[BilibiliParser] curl_cffi 客户端不可用（{exc}），尝试回退到 aiohttp 客户端"
+        )
+        try:
+            select_client("aiohttp")
+            _client_fallback = "aiohttp"
+            logger.warning("[BilibiliParser] 已回退到 aiohttp 客户端，部分场景可能更容易触发风控")
+        except Exception as exc2:
+            _client_fallback = "unknown"
+            logger.exception(
+                f"[BilibiliParser] aiohttp 客户端也无法启用，B站解析可能失败：{exc2}"
+            )
+            # 重新抛出原始异常，让上层知道 curl_cffi 未注册
+            raise
+    finally:
+        _client_initialized = True
 
 
 class BilibiliParser(BaseParser):
@@ -32,6 +61,8 @@ class BilibiliParser(BaseParser):
     platform: ClassVar[Platform] = Platform(name="bilibili", display_name="B站")
 
     def __init__(self, config: PluginConfig, downloader: Downloader):
+        # 延迟初始化 bilibili_api 网络客户端，避免模块加载阶段触发依赖异常
+        _ensure_bilibili_client()
         super().__init__(config, downloader)
         self.mycfg = config.parser.bilibili
         self.headers.update(
