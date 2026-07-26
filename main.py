@@ -85,7 +85,7 @@ class ParserPlugin(Star):
             self.cfg.compressor = None
 
     async def terminate(self):
-        """插件卸载时触发"""
+        """插件卸载就触发"""
         # 关下载器里的会话
         await self.downloader.close()
         # 关所有解析器里的会话 (去重后的实例)
