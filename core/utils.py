@@ -240,3 +240,97 @@ def extract_json_url(data: dict | str) -> str | None:
         if url := meta.get(key1, {}).get(key2):
             return url
     return None
+
+
+_SENSITIVE_PARAMS = {
+    "mid",
+    "access_key",
+    "sign",
+    "buvid",
+    "uid",
+    "token",
+    "session_id",
+    "traceid",
+}
+
+
+def sanitize_url(url: str | None) -> str:
+    """对 URL 中的敏感参数进行脱敏处理
+
+    将 mid、access_key、sign、buvid、uid、token、session_id、traceid
+    等参数的值替换为 ***，便于安全地输出到日志。
+    """
+    if not url:
+        return ""
+    try:
+        parsed = urlparse(url)
+        if not parsed.query:
+            return url
+        pairs = []
+        for part in parsed.query.split("&"):
+            if "=" not in part:
+                pairs.append(part)
+                continue
+            key, value = part.split("=", 1)
+            if key.lower() in _SENSITIVE_PARAMS:
+                pairs.append(f"{key}=***")
+            else:
+                pairs.append(part)
+        new_query = "&".join(pairs)
+        return url.replace(parsed.query, new_query, 1)
+    except Exception:
+        return url
+
+
+async def merge_av_streaming(
+    *,
+    v_path: Path,
+    a_path: Path,
+    output_path: Path,
+) -> None:
+    """流式合并视频和音频，逐块写入输出文件，适合大文件
+
+    Args:
+        v_path: 视频文件路径
+        a_path: 音频文件路径
+        output_path: 输出文件路径
+    """
+    from astrbot.api import logger
+
+    logger.info(f"[Merge] 流式合并 {v_path.name} 和 {a_path.name} -> {output_path.name}")
+
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(v_path),
+        "-i",
+        str(a_path),
+        "-c",
+        "copy",
+        "-map",
+        "0:v:0",
+        "-map",
+        "1:a:0",
+        str(output_path),
+    ]
+
+    await exec_ffmpeg_cmd(cmd)
+    cleanup = [p for p in (v_path, a_path) if p != output_path]
+    await asyncio.gather(*(safe_unlink(p) for p in cleanup))
+    logger.info(f"[Merge] 流式合并完成: {output_path.name}, {fmt_size(output_path)}")
+
+
+def memory_info() -> tuple[int, int] | None:
+    """获取系统内存信息
+
+    Returns:
+        (total_bytes, available_bytes) 或 None（psutil 不可用/异常）
+    """
+    try:
+        import psutil
+
+        mem = psutil.virtual_memory()
+        return mem.total, mem.available
+    except Exception:
+        return None

@@ -227,6 +227,25 @@ class GroupOverride(ConfigNode):
     perf_download_recover_step: int | None
     perf_download_recover_interval: int | None
 
+    dns_prefetch_enabled: bool | None
+    cdn_prefetch_enabled: bool | None
+    enable_range_download: bool | None
+    range_download_max_parts: int | None
+    range_download_max_parts_platforms: dict | None
+    range_memory_fallback_to_single: bool | None
+    range_merge_threshold_mb: int | None
+    range_part_timeout: int | None
+    range_total_timeout: int | None
+    range_memory_adaptive: bool | None
+    range_memory_reserve_percent: int | None
+    enable_streaming_compress: bool | None
+    video_cache_enabled: bool | None
+    video_cache_ttl: int | None
+    video_cache_max_count: int | None
+    memory_monitor_enabled: bool | None
+    memory_monitor_interval: int | None
+    memory_monitor_warning_threshold: int | None
+
 
 class EffectiveConfig:
     """
@@ -326,6 +345,23 @@ class PluginConfig(ConfigNode):
     perf_download_min_concurrency: int
     perf_download_recover_step: int
     perf_download_recover_interval: int
+
+    dns_prefetch: dict[str, Any]
+    cdn_prefetch_enabled: bool
+    enable_range_download: bool
+    range_download_max_parts: int
+    range_download_max_parts_platforms: dict[str, Any]
+    range_memory_fallback_to_single: bool
+    range_merge_threshold_mb: int
+    range_part_timeout: int
+    range_total_timeout: int
+    range_memory_adaptive: bool
+    range_memory_reserve_percent: int
+    enable_streaming_compress: bool
+    video_cache_enabled: bool
+    video_cache_ttl: int
+    video_cache_max_count: int
+    memory_monitor: dict[str, Any]
 
     proxy: str | None
 

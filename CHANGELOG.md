@@ -1,5 +1,71 @@
 # 更新日志
 
+## v1.6.0
+
+### 新增：下载优化完整方案（全部默认关闭）
+
+本次更新引入 8 项下载层优化，所有开关默认关闭，用户可在配置面板按需开启。
+
+- **DNS 预解析**（`dns_prefetch`）
+  - 新增 `core/dns_cache.py`
+  - 插件启动时预解析所有已启用解析器对应平台的域名
+  - 支持启动预解析、定时刷新、单域名 2 秒超时、整体 10 秒超时
+  - 修改后需重启插件生效
+
+- **CDN 节点优选**（`cdn_prefetch_enabled`）
+  - 下载多个备选 URL 时，对每个 URL 下载 256KB 测速，选择最快节点
+  - 测速数据不丢弃，作为第一个分块复用（实际当前实现先测速后正式下载）
+  - 测速结果缓存 5 分钟
+  - 仅对 B站（多 durl/dash 节点）和 YouTube（yt-dlp formats）生效
+  - 仅文件 >= 10MB 时执行
+
+- **分块并发下载**（`enable_range_download`）
+  - 新增 HTTP Range 分块下载，压缩关闭时生效
+  - 自动按文件大小分配分块数：10MB 以下 1 块、10-50MB 2 块、50-100MB 3 块、100-500MB 4 块、500MB-1GB 6 块、>1GB 8 块
+  - 实际分块数取自动分配值与用户上限（含平台单独上限、内存监控降级）的较小值
+  - 支持风控降级：403/416 回退单连接，同一平台连续失败 3 次禁用分块 10 分钟
+
+- **分块下载内存自适应**（`range_memory_adaptive`）
+  - 根据可用内存选择合并策略
+  - 文件 < 可用内存 50%：内存合并
+  - 文件 < 可用内存 80%：内存合并 + 自动降低分块数
+  - 文件 >= 可用内存 80%：流式合并
+  - 保留可用内存的 10% 不使用
+
+- **流式压缩**（`enable_streaming_compress`）
+  - 视频压缩开启时生效
+  - 当前实现为：下载完成后立即使用 ffmpeg 进行文件级压缩（保留传统压缩回退）
+  - 压缩参数根据品质模式动态生成
+
+- **后台内存监控**（`memory_monitor`）
+  - 新增 `core/memory_monitor.py`
+  - 每 30 秒检测系统内存
+  - 可用内存低于阈值时自动降低分块数上限
+  - 每次解析完成后主动检查并恢复上限
+
+- **日志 URL 脱敏**（`core/utils.py`）
+  - 新增 `sanitize_url` 函数
+  - 对 `mid`、`access_key`、`sign`、`buvid`、`uid`、`token`、`session_id`、`traceid` 替换为 `***`
+  - 所有下载日志中的 URL 均经过脱敏
+
+- **视频下载缓存**（`video_cache_enabled`）
+  - 新增 `core/cache.py` 中的 `VideoCacheManager`
+  - 缓存键：`hash(原始URL + 文件大小 + 分辨率 + 压缩品质模式 + CRF值)`
+  - 支持 TTL 和 LRU 淘汰
+
+### 其他修改
+
+- `core/download.py` 重构：
+  - 集成 CDN 优选、分块下载、视频缓存、压缩、URL 脱敏
+  - 保留自适应下载并发
+  - 新增智能阈值判断（<10MB 跳过优化，10-15MB 不测速可压缩，>=20MB 完全启用）
+- `core/utils.py`：新增 `sanitize_url`、`merge_av_streaming`、`memory_info`
+- `core/sender.py`：`_maybe_compress` 跳过已带 `_compressed` 后缀的文件，避免重复压缩
+- `core/config.py`：添加所有新配置字段及群覆盖字段
+- `_conf_schema.json`：新增全部配置面板项
+- `requirements.txt`：新增 `psutil`
+- `main.py`：初始化并启动 VideoCache、MemoryMonitor、DNSCacheManager
+
 ## v1.5.3
 
 ### 重构

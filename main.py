@@ -22,13 +22,15 @@ from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
 )
 
 from .core.arbiter import ArbiterContext, EmojiLikeArbiter
-from .core.cache import RenderCacheManager
+from .core.cache import RenderCacheManager, VideoCacheManager
 from .core.clean import CacheCleaner
 from .core.compress import VideoCompressor
 from .core.config import PluginConfig
 from .core.debounce import Debouncer
+from .core.dns_cache import DNSCacheManager
 from .core.download import Downloader
 from .core.hw_detect import HardwareDetector
+from .core.memory_monitor import MemoryMonitor
 from .core.parsers import BaseParser, BilibiliParser
 from .core.render import Renderer
 from .core.sender import MessageSender
@@ -50,6 +52,17 @@ class ParserPlugin(Star):
         self.renderer = Renderer(self.cfg, cache_manager=self.render_cache)
         # 下载器
         self.downloader = Downloader(self.cfg)
+        # 视频下载缓存
+        self.video_cache = VideoCacheManager(
+            cache_dir=self.cfg.cache_dir,
+            ttl=self.cfg.video_cache_ttl * 86400,
+            max_count=self.cfg.video_cache_max_count,
+            enabled=self.cfg.video_cache_enabled,
+        )
+        self.downloader.set_video_cache(self.video_cache)
+        # 内存监控
+        self.memory_monitor = MemoryMonitor(self.cfg)
+        self.downloader.set_memory_monitor(self.memory_monitor)
         # 防抖器
         self.debouncer = Debouncer(self.cfg)
         # 仲裁器
@@ -58,6 +71,8 @@ class ParserPlugin(Star):
         self.sender = MessageSender(self.cfg, self.renderer)
         # 缓存清理器
         self.cleaner = CacheCleaner(self.cfg)
+        # DNS 预解析
+        self.dns_cache = DNSCacheManager(self.cfg)
         # 关键词 -> Parser 映射
         self.parser_map: dict[str, BaseParser] = {}
         # 关键词 -> 正则 列表
@@ -69,6 +84,21 @@ class ParserPlugin(Star):
         await asyncio.to_thread(Renderer.load_resources)
         # 注册解析器
         self._register_parser()
+        # 启动内存监控
+        try:
+            await self.memory_monitor.start()
+        except Exception as e:
+            logger.warning(f"[MemoryMonitor] 启动失败: {e}")
+        # 启动 DNS 预解析（依赖已注册解析器）
+        try:
+            parser_classes = BaseParser.get_all_subclass()
+            enabled_classes = [
+                cls for cls in parser_classes
+                if cls.platform.name in self.cfg.parser.enabled_platforms()
+            ]
+            await self.dns_cache.start(enabled_classes)
+        except Exception as e:
+            logger.warning(f"[DNSPrefetch] 启动失败: {e}")
         # 异步硬件检测（结果仅输出到日志）
         try:
             detector = HardwareDetector()
@@ -96,6 +126,16 @@ class ParserPlugin(Star):
         self.renderer.close()
         # 关缓存清理器
         await self.cleaner.stop()
+        # 关 DNS 预解析
+        try:
+            await self.dns_cache.stop()
+        except Exception as e:
+            logger.warning(f"[DNSPrefetch] 停止失败: {e}")
+        # 关内存监控
+        try:
+            await self.memory_monitor.stop()
+        except Exception as e:
+            logger.warning(f"[MemoryMonitor] 停止失败: {e}")
 
     def _register_parser(self):
         """注册解析器（以 parser.enable 为唯一启用来源）"""
@@ -306,6 +346,12 @@ class ParserPlugin(Star):
         # 解析完成后@用户 + 自定义文本（可选，不合并）
         if cfg.at_after_parse:
             await self._send_after_parse_at(event, cfg, parse_res, sender)
+
+        # 每次解析完成后主动检查内存，触发恢复
+        try:
+            await self.memory_monitor.check_now()
+        except Exception:
+            pass
 
     @staticmethod
     def _get_source_message_id(event: AstrMessageEvent) -> int | str | None:

@@ -95,21 +95,42 @@
         "description": "压缩品质模式",
         "hint": "画质优先=更小压缩率但画质更好；平衡=兼顾画质与速度；速度优先=更快压缩、更小文件；自定义=开放下方高级参数",
         "type": "string",
-        "options": ["quality", "balance", "speed", "custom"],
+        "options": [
+            "quality",
+            "balance",
+            "speed",
+            "custom"
+        ],
         "default": "balance"
     },
     "video_compress_encoder": {
         "description": "视频编码方式",
         "hint": "自动检测推荐=根据启动时硬件检测结果选择；CPU软件编码=兼容性最好；GPU硬件加速=需对应显卡和ffmpeg支持；手机端硬件加速=仅Android/Termux环境",
         "type": "string",
-        "options": ["auto", "cpu", "nvenc", "qsv", "amf", "mediacodec"],
+        "options": [
+            "auto",
+            "cpu",
+            "nvenc",
+            "qsv",
+            "amf",
+            "mediacodec"
+        ],
         "default": "auto"
     },
     "video_compress_custom_preset": {
         "description": "自定义编码速度预设",
         "hint": "自定义模式下生效。不同编码器会映射到对应预设值",
         "type": "string",
-        "options": ["ultrafast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow"],
+        "options": [
+            "ultrafast",
+            "veryfast",
+            "faster",
+            "fast",
+            "medium",
+            "slow",
+            "slower",
+            "veryslow"
+        ],
         "default": "medium"
     },
     "video_compress_custom_resolution": {
@@ -122,7 +143,12 @@
         "description": "自定义音频码率",
         "hint": "自定义模式下生效",
         "type": "string",
-        "options": ["32k", "64k", "96k", "128k"],
+        "options": [
+            "32k",
+            "64k",
+            "96k",
+            "128k"
+        ],
         "default": "128k"
     },
     "video_compress_custom_fps": {
@@ -436,6 +462,198 @@
         },
         "default": 60
     },
+    "dns_prefetch": {
+        "description": "DNS预解析",
+        "hint": "开启后，插件启动时会预解析所有已启用解析器对应平台的域名，可加快首次下载速度。修改后需重启插件生效",
+        "type": "object",
+        "default": {},
+        "items": {
+            "enabled": {
+                "description": "启用DNS预解析",
+                "hint": "DNS预解析总开关",
+                "type": "bool",
+                "default": false
+            },
+            "prefetch_on_startup": {
+                "description": "启动时预解析",
+                "hint": "插件启动时立即执行一次DNS预解析",
+                "type": "bool",
+                "default": false
+            },
+            "periodic_refresh": {
+                "description": "定时刷新",
+                "hint": "按下方间隔周期性重新解析域名",
+                "type": "bool",
+                "default": false
+            },
+            "refresh_interval": {
+                "description": "刷新间隔（秒）",
+                "hint": "定时刷新DNS的间隔",
+                "type": "int",
+                "slider": {
+                    "min": 60,
+                    "max": 3600,
+                    "step": 60
+                },
+                "default": 300
+            }
+        }
+    },
+    "cdn_prefetch_enabled": {
+        "description": "CDN节点优选",
+        "hint": "开启后，下载多个备选URL时先快速测速选择最快节点。仅对B站（多durl/dash节点）和YouTube（yt-dlp formats）生效，文件需>=10MB",
+        "type": "bool",
+        "default": false
+    },
+    "enable_range_download": {
+        "description": "分块并发下载",
+        "hint": "开启后，关闭视频压缩时对大文件使用HTTP Range分块并发下载，可提升大文件下载速度。压缩开启时关闭分块下载",
+        "type": "bool",
+        "default": false
+    },
+    "range_download_max_parts": {
+        "description": "全局最大分块数上限",
+        "hint": "分块并发下载时单文件最多分多少块。实际分块数由文件大小自动分配并取较小值",
+        "type": "int",
+        "slider": {
+            "min": 2,
+            "max": 16,
+            "step": 1
+        },
+        "default": 8
+    },
+    "range_download_max_parts_platforms": {
+        "description": "各平台最大分块数上限",
+        "hint": "按平台名设置分块数上限覆盖全局值，未设置的平台使用全局上限。例如：{\"bilibili\": 4, \"youtube\": 6}",
+        "type": "object",
+        "default": {}
+    },
+    "range_memory_fallback_to_single": {
+        "description": "内存不足时回退单连接",
+        "hint": "开启内存自适应后，可用内存不足时直接关闭分块下载（降至1块）。关闭则最低降至2块",
+        "type": "bool",
+        "default": false
+    },
+    "range_merge_threshold_mb": {
+        "description": "内存合并阈值（MB）",
+        "hint": "音视频合并时，文件小于此值直接内存合并；大于等于此值使用流式合并",
+        "type": "int",
+        "slider": {
+            "min": 10,
+            "max": 500,
+            "step": 10
+        },
+        "default": 100
+    },
+    "range_part_timeout": {
+        "description": "单块下载超时（秒）",
+        "hint": "每个分块的最大下载时间",
+        "type": "int",
+        "slider": {
+            "min": 10,
+            "max": 120,
+            "step": 5
+        },
+        "default": 30
+    },
+    "range_total_timeout": {
+        "description": "整体下载超时（秒）",
+        "hint": "整个分块下载任务的最大时间",
+        "type": "int",
+        "slider": {
+            "min": 30,
+            "max": 600,
+            "step": 10
+        },
+        "default": 120
+    },
+    "range_memory_adaptive": {
+        "description": "分块下载内存自适应",
+        "hint": "开启后，根据可用内存自动决定音视频合并策略：文件<可用内存50%内存合并；<80%内存合并但降分块；>=80%流式合并。需安装psutil",
+        "type": "bool",
+        "default": false
+    },
+    "range_memory_reserve_percent": {
+        "description": "内存保留比例（%）",
+        "hint": "内存自适应时保留多少可用内存不用于下载合并",
+        "type": "int",
+        "slider": {
+            "min": 5,
+            "max": 30,
+            "step": 1
+        },
+        "default": 10
+    },
+    "enable_streaming_compress": {
+        "description": "流式压缩",
+        "hint": "开启视频压缩时生效。使用FFmpeg pipe边下载边压缩，总耗时约等于max(下载时间,压缩时间)。失败自动回退到传统压缩",
+        "type": "bool",
+        "default": false
+    },
+    "video_cache_enabled": {
+        "description": "启用视频下载缓存",
+        "hint": "开启后缓存合并后的完整视频文件，相同URL+文件大小+分辨率+压缩参数直接命中缓存",
+        "type": "bool",
+        "default": false
+    },
+    "video_cache_ttl": {
+        "description": "视频缓存有效期（天）",
+        "hint": "视频缓存保留天数，超过后自动清理",
+        "type": "int",
+        "slider": {
+            "min": 1,
+            "max": 30,
+            "step": 1
+        },
+        "default": 7
+    },
+    "video_cache_max_count": {
+        "description": "视频缓存最大文件数",
+        "hint": "磁盘上最多保留多少个缓存视频，超过后按LRU淘汰",
+        "type": "int",
+        "slider": {
+            "min": 10,
+            "max": 500,
+            "step": 10
+        },
+        "default": 50
+    },
+    "memory_monitor": {
+        "description": "内存监控",
+        "hint": "后台监控系统内存，低内存时自动降低分块数。需安装psutil",
+        "type": "object",
+        "default": {},
+        "items": {
+            "enabled": {
+                "description": "启用内存监控",
+                "hint": "内存监控总开关",
+                "type": "bool",
+                "default": false
+            },
+            "interval": {
+                "description": "检测间隔（秒）",
+                "hint": "多久检测一次内存",
+                "type": "int",
+                "slider": {
+                    "min": 5,
+                    "max": 300,
+                    "step": 5
+                },
+                "default": 30
+            },
+            "warning_threshold": {
+                "description": "警告阈值（%）",
+                "hint": "可用内存低于总内存的该百分比时触发降级",
+                "type": "int",
+                "slider": {
+                    "min": 1,
+                    "max": 50,
+                    "step": 1
+                },
+                "default": 10
+            }
+        }
+    },
     "show_download_fail_tip": {
         "description": "提示下载失败项",
         "hint": "关闭后将不再发送与下载失败相关的提示（如“此项媒体下载失败”、“超过文件大小限制”等）",
@@ -712,6 +930,136 @@
                             "step": 10
                         },
                         "default": null
+                    },
+                    "dns_prefetch_enabled": {
+                        "description": "DNS预解析",
+                        "type": "bool",
+                        "default": null
+                    },
+                    "cdn_prefetch_enabled": {
+                        "description": "CDN节点优选",
+                        "type": "bool",
+                        "default": null
+                    },
+                    "enable_range_download": {
+                        "description": "分块并发下载",
+                        "type": "bool",
+                        "default": null
+                    },
+                    "range_download_max_parts": {
+                        "description": "全局最大分块数上限",
+                        "type": "int",
+                        "slider": {
+                            "min": 2,
+                            "max": 16,
+                            "step": 1
+                        },
+                        "default": null
+                    },
+                    "range_memory_fallback_to_single": {
+                        "description": "内存不足回退单连接",
+                        "type": "bool",
+                        "default": null
+                    },
+                    "range_merge_threshold_mb": {
+                        "description": "内存合并阈值(MB)",
+                        "type": "int",
+                        "slider": {
+                            "min": 10,
+                            "max": 500,
+                            "step": 10
+                        },
+                        "default": null
+                    },
+                    "range_part_timeout": {
+                        "description": "单块下载超时(秒)",
+                        "type": "int",
+                        "slider": {
+                            "min": 10,
+                            "max": 120,
+                            "step": 5
+                        },
+                        "default": null
+                    },
+                    "range_total_timeout": {
+                        "description": "整体下载超时(秒)",
+                        "type": "int",
+                        "slider": {
+                            "min": 30,
+                            "max": 600,
+                            "step": 10
+                        },
+                        "default": null
+                    },
+                    "range_memory_adaptive": {
+                        "description": "分块下载内存自适应",
+                        "type": "bool",
+                        "default": null
+                    },
+                    "range_memory_reserve_percent": {
+                        "description": "内存保留比例(%)",
+                        "type": "int",
+                        "slider": {
+                            "min": 5,
+                            "max": 30,
+                            "step": 1
+                        },
+                        "default": null
+                    },
+                    "enable_streaming_compress": {
+                        "description": "流式压缩",
+                        "type": "bool",
+                        "default": null
+                    },
+                    "video_cache_enabled": {
+                        "description": "启用视频下载缓存",
+                        "type": "bool",
+                        "default": null
+                    },
+                    "video_cache_ttl": {
+                        "description": "视频缓存有效期(天)",
+                        "type": "int",
+                        "slider": {
+                            "min": 1,
+                            "max": 30,
+                            "step": 1
+                        },
+                        "default": null
+                    },
+                    "video_cache_max_count": {
+                        "description": "视频缓存最大文件数",
+                        "type": "int",
+                        "slider": {
+                            "min": 10,
+                            "max": 500,
+                            "step": 10
+                        },
+                        "default": null
+                    },
+                    "memory_monitor_enabled": {
+                        "description": "内存监控总开关",
+                        "type": "bool",
+                        "default": null
+                    },
+                    "memory_monitor_interval": {
+                        "description": "内存监控间隔(秒)",
+                        "type": "int",
+                        "slider": {
+                            "min": 5,
+                            "max": 300,
+                            "step": 5
+                        },
+                        "default": null
+                    },
+                    "memory_monitor_warning_threshold": {
+                        "description": "内存监控警告阈值(%)",
+                        "type": "int",
+                        "slider": {
+                            "min": 1,
+                            "max": 50,
+                            "step": 1
+                        },
+                        "default": null
                     }
                 }
             }
@@ -798,6 +1146,17 @@
                             "AI修复"
                         ],
                         "default": "_720P"
+                    },
+                    "range_download_max_parts": {
+                        "description": "该平台最大分块数上限",
+                        "hint": "覆盖全局最大分块数上限，0表示使用全局值",
+                        "type": "int",
+                        "slider": {
+                            "min": 0,
+                            "max": 16,
+                            "step": 1
+                        },
+                        "default": 0
                     }
                 }
             },
@@ -830,6 +1189,17 @@
                         "hint": "选填",
                         "type": "text",
                         "default": ""
+                    },
+                    "range_download_max_parts": {
+                        "description": "该平台最大分块数上限",
+                        "hint": "覆盖全局最大分块数上限，0表示使用全局值",
+                        "type": "int",
+                        "slider": {
+                            "min": 0,
+                            "max": 16,
+                            "step": 1
+                        },
+                        "default": 0
                     }
                 }
             },
@@ -862,6 +1232,17 @@
                         "hint": "选填",
                         "type": "text",
                         "default": ""
+                    },
+                    "range_download_max_parts": {
+                        "description": "该平台最大分块数上限",
+                        "hint": "覆盖全局最大分块数上限，0表示使用全局值",
+                        "type": "int",
+                        "slider": {
+                            "min": 0,
+                            "max": 16,
+                            "step": 1
+                        },
+                        "default": 0
                     }
                 }
             },
@@ -894,6 +1275,17 @@
                         "hint": "解析视频号视频必填：登录 yuanbao.tencent.com 后复制其 Cookie 粘贴于此（借元宝登录态换取视频直链）",
                         "type": "text",
                         "default": ""
+                    },
+                    "range_download_max_parts": {
+                        "description": "该平台最大分块数上限",
+                        "hint": "覆盖全局最大分块数上限，0表示使用全局值",
+                        "type": "int",
+                        "slider": {
+                            "min": 0,
+                            "max": 16,
+                            "step": 1
+                        },
+                        "default": 0
                     }
                 }
             },
@@ -926,6 +1318,17 @@
                         "hint": "选填",
                         "type": "text",
                         "default": ""
+                    },
+                    "range_download_max_parts": {
+                        "description": "该平台最大分块数上限",
+                        "hint": "覆盖全局最大分块数上限，0表示使用全局值",
+                        "type": "int",
+                        "slider": {
+                            "min": 0,
+                            "max": 16,
+                            "step": 1
+                        },
+                        "default": 0
                     }
                 }
             },
@@ -958,6 +1361,17 @@
                         "hint": "选填, 小红书部分链接解析有水印, 填充Cookies可去除水印",
                         "type": "text",
                         "default": ""
+                    },
+                    "range_download_max_parts": {
+                        "description": "该平台最大分块数上限",
+                        "hint": "覆盖全局最大分块数上限，0表示使用全局值",
+                        "type": "int",
+                        "slider": {
+                            "min": 0,
+                            "max": 16,
+                            "step": 1
+                        },
+                        "default": 0
                     }
                 }
             },
@@ -1007,6 +1421,17 @@
                             "first",
                             "all"
                         ]
+                    },
+                    "range_download_max_parts": {
+                        "description": "该平台最大分块数上限",
+                        "hint": "覆盖全局最大分块数上限，0表示使用全局值",
+                        "type": "int",
+                        "slider": {
+                            "min": 0,
+                            "max": 16,
+                            "step": 1
+                        },
+                        "default": 0
                     }
                 }
             },
@@ -1039,6 +1464,17 @@
                         "hint": "必填! 否则无法解析知乎内容",
                         "type": "text",
                         "default": ""
+                    },
+                    "range_download_max_parts": {
+                        "description": "该平台最大分块数上限",
+                        "hint": "覆盖全局最大分块数上限，0表示使用全局值",
+                        "type": "int",
+                        "slider": {
+                            "min": 0,
+                            "max": 16,
+                            "step": 1
+                        },
+                        "default": 0
                     }
                 }
             },
@@ -1071,6 +1507,17 @@
                         "hint": "选填",
                         "type": "text",
                         "default": ""
+                    },
+                    "range_download_max_parts": {
+                        "description": "该平台最大分块数上限",
+                        "hint": "覆盖全局最大分块数上限，0表示使用全局值",
+                        "type": "int",
+                        "slider": {
+                            "min": 0,
+                            "max": 16,
+                            "step": 1
+                        },
+                        "default": 0
                     }
                 }
             },
@@ -1103,6 +1550,17 @@
                         "hint": "必填! 同时注意油管Cookie有效期较短",
                         "type": "text",
                         "default": ""
+                    },
+                    "range_download_max_parts": {
+                        "description": "该平台最大分块数上限",
+                        "hint": "覆盖全局最大分块数上限，0表示使用全局值",
+                        "type": "int",
+                        "slider": {
+                            "min": 0,
+                            "max": 16,
+                            "step": 1
+                        },
+                        "default": 0
                     }
                 }
             },
@@ -1135,6 +1593,17 @@
                         "hint": "必填",
                         "type": "text",
                         "default": ""
+                    },
+                    "range_download_max_parts": {
+                        "description": "该平台最大分块数上限",
+                        "hint": "覆盖全局最大分块数上限，0表示使用全局值",
+                        "type": "int",
+                        "slider": {
+                            "min": 0,
+                            "max": 16,
+                            "step": 1
+                        },
+                        "default": 0
                     }
                 }
             },
@@ -1167,6 +1636,17 @@
                         "hint": "选填",
                         "type": "text",
                         "default": ""
+                    },
+                    "range_download_max_parts": {
+                        "description": "该平台最大分块数上限",
+                        "hint": "覆盖全局最大分块数上限，0表示使用全局值",
+                        "type": "int",
+                        "slider": {
+                            "min": 0,
+                            "max": 16,
+                            "step": 1
+                        },
+                        "default": 0
                     }
                 }
             },
@@ -1199,6 +1679,17 @@
                         "hint": "选填",
                         "type": "text",
                         "default": ""
+                    },
+                    "range_download_max_parts": {
+                        "description": "该平台最大分块数上限",
+                        "hint": "覆盖全局最大分块数上限，0表示使用全局值",
+                        "type": "int",
+                        "slider": {
+                            "min": 0,
+                            "max": 16,
+                            "step": 1
+                        },
+                        "default": 0
                     }
                 }
             },
@@ -1231,6 +1722,17 @@
                         "hint": "选填",
                         "type": "text",
                         "default": ""
+                    },
+                    "range_download_max_parts": {
+                        "description": "该平台最大分块数上限",
+                        "hint": "覆盖全局最大分块数上限，0表示使用全局值",
+                        "type": "int",
+                        "slider": {
+                            "min": 0,
+                            "max": 16,
+                            "step": 1
+                        },
+                        "default": 0
                     }
                 }
             },
@@ -1263,6 +1765,17 @@
                         "hint": "选填",
                         "type": "text",
                         "default": ""
+                    },
+                    "range_download_max_parts": {
+                        "description": "该平台最大分块数上限",
+                        "hint": "覆盖全局最大分块数上限，0表示使用全局值",
+                        "type": "int",
+                        "slider": {
+                            "min": 0,
+                            "max": 16,
+                            "step": 1
+                        },
+                        "default": 0
                     }
                 }
             },
@@ -1328,6 +1841,17 @@
                             "忽略"
                         ],
                         "default": "模糊处理后发送"
+                    },
+                    "range_download_max_parts": {
+                        "description": "该平台最大分块数上限",
+                        "hint": "覆盖全局最大分块数上限，0表示使用全局值",
+                        "type": "int",
+                        "slider": {
+                            "min": 0,
+                            "max": 16,
+                            "step": 1
+                        },
+                        "default": 0
                     }
                 }
             }

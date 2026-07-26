@@ -145,9 +145,14 @@ class MessageSender:
         return Record.fromFileSystem(str(path))
 
     async def _maybe_compress(self, path: Path) -> Path:
-        """如开启视频压缩则对视频进行压缩，失败时回退原文件"""
+        """如开启视频压缩则对视频进行压缩，失败时回退原文件。
+
+        若文件路径已带有 _compressed 后缀，说明下载器已处理过压缩，跳过避免重复压缩。
+        """
         compressor = getattr(self.cfg, "compressor", None)
         if not compressor or not compressor.enabled:
+            return path
+        if "_compressed" in path.stem:
             return path
         try:
             return await compressor.compress(path)
