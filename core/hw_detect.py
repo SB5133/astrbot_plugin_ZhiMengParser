@@ -31,6 +31,8 @@ class HardwareInfo:
     available_encoders: list[str] = field(default_factory=list)
     is_mobile: bool = False
     platform_system: str = ""
+    os_name: str = ""
+    kernel_version: str = ""
     detection_errors: list[str] = field(default_factory=list)
 
     def has_encoder(self, encoder: str) -> bool:
@@ -67,6 +69,7 @@ class HardwareDetector:
 
     async def detect(self) -> HardwareInfo:
         """执行完整硬件检测"""
+        await self._detect_os()
         await asyncio.gather(
             self._detect_cpu(),
             self._detect_gpu(),
@@ -76,6 +79,56 @@ class HardwareDetector:
         )
         await self._detect_ffmpeg_encoders()
         return self.info
+
+    async def _detect_os(self) -> None:
+        """检测操作系统名称与内核版本"""
+        self.info.kernel_version = platform.release()
+        sys = self.info.platform_system
+
+        # Linux 优先读取 /etc/os-release
+        os_release = Path("/etc/os-release")
+        if os_release.exists():
+            try:
+                content = os_release.read_text(encoding="utf-8", errors="ignore")
+                pretty_name = ""
+                name = ""
+                version_id = ""
+                for line in content.splitlines():
+                    if line.startswith("PRETTY_NAME="):
+                        pretty_name = line.split("=", 1)[1].strip().strip('"')
+                    elif line.startswith("NAME="):
+                        name = line.split("=", 1)[1].strip().strip('"')
+                    elif line.startswith("VERSION_ID="):
+                        version_id = line.split("=", 1)[1].strip().strip('"')
+
+                if pretty_name:
+                    self.info.os_name = pretty_name
+                elif name and version_id:
+                    self.info.os_name = f"{name} {version_id}"
+                elif name:
+                    self.info.os_name = name
+            except Exception as e:
+                self.info.detection_errors.append(f"OS 检测失败: {e}")
+
+        # /etc/os-release 不存在或为 Linux 但解析失败，尝试 lsb_release
+        if not self.info.os_name and sys == "Linux":
+            rc, out, _ = await self._run_cmd(["lsb_release", "-ds"])
+            if rc == 0 and out.strip():
+                self.info.os_name = out.strip().strip('"')
+
+        # Windows / macOS 回退
+        if not self.info.os_name and sys == "Windows":
+            self.info.os_name = platform.platform()
+        elif not self.info.os_name and sys == "Darwin":
+            try:
+                ver, _, _ = platform.mac_ver()
+                self.info.os_name = f"macOS {ver}" if ver else platform.platform()
+            except Exception:
+                self.info.os_name = platform.platform()
+
+        # 最终兜底
+        if not self.info.os_name:
+            self.info.os_name = platform.platform()
 
     async def _run_cmd(self, cmd: list[str], timeout: int = 10) -> tuple[int, str, str]:
         """异步执行命令，返回 (returncode, stdout, stderr)"""
@@ -290,6 +343,8 @@ class HardwareDetector:
         """将检测结果输出到日志"""
         lines = [
             "[HWDetect] ====== 硬件检测结果 ======",
+            f"[HWDetect] 操作系统: {self.info.os_name}",
+            f"[HWDetect] 内核版本: {self.info.kernel_version}",
             f"[HWDetect] 平台: {self.info.platform_system}",
             f"[HWDetect] CPU: {self.info.cpu_model}",
             f"[HWDetect] CPU 核心数: {self.info.cpu_cores}",
