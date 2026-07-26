@@ -3,27 +3,21 @@
         "description": "解析白名单",
         "hint": "请填写会话ID (可用命令sid查看), 一旦添加了白名单，则只有白名单会话发的链接会触发解析，优先级比黑名单高。留空表示不限制",
         "type": "list",
-        "items": {
-            "type": "string"
-        },
+        "items": {},
         "default": []
     },
     "blacklist": {
         "description": "解析黑名单",
         "hint": "请填写会话ID (可用命令sid查看), 黑名单会话发的链接不会触发解析。可在会话中使用命令 “开启解析” 和 “关闭解析” 来快捷设置",
         "type": "list",
-        "items": {
-            "type": "string"
-        },
+        "items": {},
         "default": []
     },
     "user_blacklist": {
         "description": "用户黑名单",
         "hint": "填写用户ID（如 QQ 号），黑名单用户发送的链接不会触发解析",
         "type": "list",
-        "items": {
-            "type": "string"
-        },
+        "items": {},
         "default": []
     },
     "verbose_logging": {
@@ -535,6 +529,7 @@
         "description": "各平台最大分块数上限",
         "hint": "按平台名设置分块数上限覆盖全局值，未设置的平台使用全局上限。例如：{\"bilibili\": 4, \"youtube\": 6}",
         "type": "object",
+        "items": {},
         "default": {}
     },
     "range_memory_fallback_to_single": {
@@ -1113,9 +1108,7 @@
                         "description": "B站视频编码",
                         "hint": "优先下载的编码类型，可选：AVC、AV1、HEV。失败时会按列表依次回退",
                         "type": "list",
-                        "items": {
-                            "type": "string"
-                        },
+                        "items": {},
                         "options": [
                             "AVC",
                             "AV1",
