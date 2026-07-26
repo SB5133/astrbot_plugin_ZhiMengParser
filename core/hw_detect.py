@@ -29,6 +29,8 @@ class HardwareInfo:
     dri_devices: list[str] = field(default_factory=list)
     vaapi_drivers: list[str] = field(default_factory=list)
     available_encoders: list[str] = field(default_factory=list)
+    encoder_hw_status: dict[str, str] = field(default_factory=dict)
+    encoder_test_results: dict[str, str] = field(default_factory=dict)
     is_mobile: bool = False
     platform_system: str = ""
     os_name: str = ""
@@ -320,24 +322,204 @@ class HardwareDetector:
         if sys == "Linux" and platform.machine().lower() in ("aarch64", "arm64", "armv7l"):
             self.info.is_mobile = True
 
+    async def _has_nvidia_hw(self) -> bool:
+        """检测是否存在 NVIDIA 硬件 / 驱动"""
+        try:
+            # Linux /dev/nvidia* 设备节点
+            if any(Path("/dev").glob("nvidia*")):
+                return True
+            # nvidia-smi 是否可用且能执行
+            if shutil.which("nvidia-smi"):
+                rc, _, _ = await self._run_cmd(["nvidia-smi"], timeout=5)
+                if rc == 0:
+                    return True
+        except Exception as e:
+            self.info.detection_errors.append(f"NVIDIA 硬件检测失败: {e}")
+        return False
+
+    async def _has_intel_qsv_hw(self) -> bool:
+        """检测是否存在 Intel QSV 硬件 / 驱动"""
+        try:
+            sys = self.info.platform_system
+            # Linux 优先检查 /dev/dri + vainfo
+            if sys == "Linux":
+                dri = Path("/dev/dri")
+                has_dri = dri.exists() and any(
+                    (dri / name).exists() for name in ["renderD128", "card0"]
+                )
+                if has_dri and shutil.which("vainfo"):
+                    rc, out, err = await self._run_cmd(["vainfo"], timeout=10)
+                    text = out + err
+                    if rc == 0 and "VA-API version" in text:
+                        return True
+                # 备用：检查 /dev/dri/*/device/vendor 是否为 Intel 0x8086
+                if dri.exists():
+                    for p in dri.iterdir():
+                        vendor = p / "device" / "vendor"
+                        if vendor.exists() and "0x8086" in vendor.read_text():
+                            return True
+            # 跨平台兜底：检查 GPU 型号中是否包含 Intel
+            for gpu in self.info.gpu_models:
+                if "Intel" in gpu:
+                    return True
+        except Exception as e:
+            self.info.detection_errors.append(f"Intel QSV 硬件检测失败: {e}")
+        return False
+
+    async def _has_amd_amf_hw(self) -> bool:
+        """检测是否存在 AMD 硬件 / 驱动"""
+        try:
+            sys = self.info.platform_system
+            # Linux 检查 /dev/dri vendor 0x1002 或 lspci
+            if sys == "Linux":
+                dri = Path("/dev/dri")
+                if dri.exists():
+                    for p in dri.iterdir():
+                        vendor = p / "device" / "vendor"
+                        if vendor.exists() and "0x1002" in vendor.read_text():
+                            return True
+                rc, out, _ = await self._run_cmd(["lspci"])
+                if rc == 0:
+                    upper = out.upper()
+                    if any(k in upper for k in ("AMD", "RADEON", "ATI")):
+                        return True
+            # 跨平台兜底：检查 GPU 型号
+            for gpu in self.info.gpu_models:
+                upper = gpu.upper()
+                if any(k in upper for k in ("AMD", "RADEON", "ATI")):
+                    return True
+        except Exception as e:
+            self.info.detection_errors.append(f"AMD AMF 硬件检测失败: {e}")
+        return False
+
+    def _has_mediacodec_hw(self) -> bool:
+        """MediaCodec 仅在 Android / Termux 环境启用"""
+        return self.info.is_mobile
+
+    async def _test_encoder(self, encoder: str) -> bool:
+        """用 ffmpeg 短编码验证编码器是否真正可用，超时 5 秒"""
+        cmd = [
+            "ffmpeg",
+            "-hide_banner",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=black:s=2x2:d=0.04",
+            "-c:v",
+            encoder,
+            "-f",
+            "null",
+            "-",
+        ]
+        try:
+            rc, out, err = await self._run_cmd(cmd, timeout=5)
+            return rc == 0
+        except Exception as e:
+            self.info.detection_errors.append(f"编码器 {encoder} 测试失败: {e}")
+            return False
+
     async def _detect_ffmpeg_encoders(self) -> None:
-        """检测 ffmpeg 可用编码器"""
+        """双层验证：先硬件检测，再 ffmpeg 短编码测试"""
         if not shutil.which("ffmpeg"):
-            self.info.detection_errors.append("未检测到 ffmpeg，视频压缩功能将不可用")
+            err = "未检测到 ffmpeg，视频压缩功能将不可用，请安装 ffmpeg"
+            self.info.detection_errors.append(err)
             return
+
+        # 第一步：检查 ffmpeg 是否声明支持这些编码器
         _, out, err = await self._run_cmd(["ffmpeg", "-hide_banner", "-encoders"])
         text = out + err
         # ffmpeg -encoders 输出格式：前缀 1 位类型 + 5 位能力标志（如 V....D、V.....），再跟空格和编码器名
-        targets = {
+        ffmpeg_patterns = {
             "libx264": r"V[\.\w]{5}\s+libx264",
             "h264_nvenc": r"V[\.\w]{5}\s+h264_nvenc",
             "h264_qsv": r"V[\.\w]{5}\s+h264_qsv",
             "h264_amf": r"V[\.\w]{5}\s+h264_amf",
             "h264_mediacodec": r"V[\.\w]{5}\s+h264_mediacodec",
         }
-        for encoder, pattern in targets.items():
-            if re.search(pattern, text):
+        ffmpeg_supported = {
+            enc: re.search(pattern, text) is not None
+            for enc, pattern in ffmpeg_patterns.items()
+        }
+
+        # 第二步：硬件检测，生成候选列表
+        candidates: list[str] = []
+        hw_status: dict[str, str] = {}
+
+        # libx264 作为 CPU 兜底，只要 ffmpeg 支持就保留，无需硬件检测
+        if ffmpeg_supported.get("libx264"):
+            candidates.append("libx264")
+            hw_status["libx264"] = "CPU 软件编码（无需硬件检测）"
+        else:
+            hw_status["libx264"] = "ffmpeg 未启用 libx264"
+
+        # NVIDIA NVENC
+        has_nvidia = await self._has_nvidia_hw()
+        if ffmpeg_supported.get("h264_nvenc") and has_nvidia:
+            candidates.append("h264_nvenc")
+            hw_status["h264_nvenc"] = "NVIDIA 硬件检测通过"
+        elif not ffmpeg_supported.get("h264_nvenc"):
+            hw_status["h264_nvenc"] = "ffmpeg 未启用 h264_nvenc"
+        elif not has_nvidia:
+            hw_status["h264_nvenc"] = "未检测到 NVIDIA 硬件/驱动"
+
+        # Intel QSV
+        has_qsv = await self._has_intel_qsv_hw()
+        if ffmpeg_supported.get("h264_qsv") and has_qsv:
+            candidates.append("h264_qsv")
+            hw_status["h264_qsv"] = "Intel QSV 硬件检测通过"
+        elif not ffmpeg_supported.get("h264_qsv"):
+            hw_status["h264_qsv"] = "ffmpeg 未启用 h264_qsv"
+        elif not has_qsv:
+            hw_status["h264_qsv"] = "未检测到 Intel QSV 硬件/驱动"
+
+        # AMD AMF
+        has_amf = await self._has_amd_amf_hw()
+        if ffmpeg_supported.get("h264_amf") and has_amf:
+            candidates.append("h264_amf")
+            hw_status["h264_amf"] = "AMD AMF 硬件检测通过"
+        elif not ffmpeg_supported.get("h264_amf"):
+            hw_status["h264_amf"] = "ffmpeg 未启用 h264_amf"
+        elif not has_amf:
+            hw_status["h264_amf"] = "未检测到 AMD 硬件/驱动"
+
+        # MediaCodec
+        has_mediacodec = self._has_mediacodec_hw()
+        if ffmpeg_supported.get("h264_mediacodec") and has_mediacodec:
+            candidates.append("h264_mediacodec")
+            hw_status["h264_mediacodec"] = "Android/Termux 环境，MediaCodec 候选"
+        elif not ffmpeg_supported.get("h264_mediacodec"):
+            hw_status["h264_mediacodec"] = "ffmpeg 未启用 h264_mediacodec"
+        elif not has_mediacodec:
+            hw_status["h264_mediacodec"] = "非 Android/Termux 环境，跳过 MediaCodec"
+
+        self.info.encoder_hw_status = hw_status
+
+        # 第三步：编码器快速测试
+        test_results: dict[str, str] = {}
+        for encoder in candidates:
+            ok = await self._test_encoder(encoder)
+            status = "可用" if ok else "不可用"
+            logger.info(f"[HWDetect] 编码器测试: {encoder} {status}")
+            test_results[encoder] = status
+            if ok:
                 self.info.available_encoders.append(encoder)
+        self.info.encoder_test_results = test_results
+
+    def _format_encoder_hw_status(self) -> str:
+        if not self.info.encoder_hw_status:
+            return "无"
+        return "; ".join(
+            f"{enc}={status}"
+            for enc, status in self.info.encoder_hw_status.items()
+        )
+
+    def _format_encoder_test_results(self) -> str:
+        if not self.info.encoder_test_results:
+            return "无"
+        return "; ".join(
+            f"{enc}={status}"
+            for enc, status in self.info.encoder_test_results.items()
+        )
 
     def log_summary(self) -> None:
         """将检测结果输出到日志"""
@@ -352,6 +534,8 @@ class HardwareDetector:
             f"[HWDetect] GPU: {', '.join(self.info.gpu_models) if self.info.gpu_models else '未检测到'}",
             f"[HWDetect] /dev/dri: {', '.join(self.info.dri_devices) if self.info.dri_devices else '无'}",
             f"[HWDetect] VA-API: {', '.join(self.info.vaapi_drivers) if self.info.vaapi_drivers else '未检测/不可用'}",
+            f"[HWDetect] 编码器硬件状态: {self._format_encoder_hw_status()}",
+            f"[HWDetect] 编码器测试结果: {self._format_encoder_test_results()}",
             f"[HWDetect] 可用编码器: {', '.join(self.info.available_encoders) if self.info.available_encoders else '无'}",
             f"[HWDetect] 推荐编码器: {self.info.recommended_encoder}",
             f"[HWDetect] 推荐品质模式: {self.info.recommended_quality_mode}",

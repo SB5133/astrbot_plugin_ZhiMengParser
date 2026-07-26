@@ -1,5 +1,27 @@
 # 更新日志
 
+## v1.5.3
+
+### 重构
+
+- 重构 `core/hw_detect.py` 编码器检测逻辑，采用"硬件检测 + 编码器测试"双层验证：
+  - 第一步：硬件检测
+    - NVIDIA NVENC：检查 `/dev/nvidia*` 设备及 `nvidia-smi` 命令
+    - Intel QSV：检查 `/dev/dri/renderD128` / `/dev/dri/card0` 及 `vainfo`
+    - AMD AMF：检查 `/dev/dri` 设备 vendor `0x1002` 或 `lspci` 中的 AMD/Radeon/ATI 字样
+    - MediaCodec：仅在 Android / Termux 环境启用
+  - 第二步：编码器快速测试
+    - 对通过硬件检测的候选编码器执行 `ffmpeg -f lavfi -i color=c=black:s=2x2:d=0.04 -c:v {encoder} -f null -`
+    - 超时 5 秒，返回码 0 表示真正可用
+    - 测试日志格式：`[HWDetect] 编码器测试: h264_qsv 可用`
+  - `libx264` 作为 CPU 兜底，只要 ffmpeg 支持即保留，无需硬件检测
+  - 最终 `available_encoders` 只包含同时通过硬件检测和编码器测试的编码器
+- 新增 `HardwareInfo.encoder_hw_status` 与 `encoder_test_results` 字段
+- `log_summary()` 新增输出：
+  - `[HWDetect] 编码器硬件状态: ...`
+  - `[HWDetect] 编码器测试结果: ...`
+- 所有检测步骤均带错误捕获；ffmpeg 未安装时输出 ERROR 日志提示安装
+
 ## v1.5.2
 
 ### 修复
