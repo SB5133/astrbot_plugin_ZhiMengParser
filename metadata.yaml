@@ -2,7 +2,6 @@ name: astrbot_plugin_ZhiMengParser
 display_name: ZhiMeng Parser
 desc: 这款由稚梦深度爆改的全能链接解析器，在保持低耦合高内聚优良基因的同时，将性能压榨至极致。无论是视频、图集还是音频，也无论链接来自B站、抖音、小红书还是YouTube，都能被它丝滑捕获，一网打尽。
 help: 略
-version: v1.6.2
 author: zhimeng
+version: v1.6.2
 repo: https://github.com/SB5133/astrbot_plugin_ZhiMengParser
-
