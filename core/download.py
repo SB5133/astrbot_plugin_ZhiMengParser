@@ -702,19 +702,28 @@ class Downloader:
 
         async with self._semaphore:
             async with self.adaptive.acquire(platform):
+                # 是否有备选节点（影响是否进行测速/限流切换）
+                has_fallback = len(all_nodes) > 1
+
                 while current_node_idx < len(all_nodes):
                     current_url = all_nodes[current_node_idx]
                     current_host = self._extract_host(current_url)
                     tried_nodes.append(current_host)
 
-                    # 节点快速测速（下载前）
-                    speed_mbps = await self._test_node_speed(current_url, final_headers, proxy)
-                    if 0 < speed_mbps < 0.5:
-                        logger.warning(
-                            f"Download 节点 {current_host} 限流，切换至下一个 CDN（速度：{speed_mbps:.1f}MB/s）"
-                        )
-                        current_node_idx += 1
-                        continue
+                    # 节点快速测速（仅当存在备选节点时执行，否则直接使用原节点）
+                    if has_fallback:
+                        speed_mbps = await self._test_node_speed(current_url, final_headers, proxy)
+                        if 0 < speed_mbps < 0.5:
+                            if current_node_idx + 1 >= len(all_nodes):
+                                raise DownloadException(
+                                    f"主节点 {current_host} 限流（速度 {speed_mbps:.1f}MB/s），"
+                                    f"且无备选 CDN 节点可切换"
+                                )
+                            logger.warning(
+                                f"Download 节点 {current_host} 限流，切换至下一个 CDN（速度：{speed_mbps:.1f}MB/s）"
+                            )
+                            current_node_idx += 1
+                            continue
 
                     for attempt in range(max_retries + 1):
                         try:
@@ -844,14 +853,23 @@ class Downloader:
         proxy: str | None = None,
         platform: str | None = None,
     ) -> list[Path]:
-        """分批次下载同一 CDN 上的多个小图片，批次间有延迟"""
+        """分批次下载同一 CDN 上的多个小图片，批次间有延迟。
+
+        单张图片下载失败时记录到日志并继续处理后续图片，不中断整体流程。
+        返回结果只包含成功下载的 Path。
+        """
         if not urls:
             return []
 
         results: list[Path] = []
+        failed_urls: list[tuple[str, BaseException]] = []
         batch_size = max(1, int(self.cfg.download_batch_size))
-        for i in range(0, len(urls), batch_size):
+        total_batches = (len(urls) + batch_size - 1) // batch_size
+        for batch_idx, i in enumerate(range(0, len(urls), batch_size), start=1):
             batch = urls[i : i + batch_size]
+            self.cfg.verbose(
+                f"[DownloadBatch] 处理批次 {batch_idx}/{total_batches} | size={len(batch)} | platform={platform or '?'}"
+            )
             tasks = [
                 self.download_img(
                     url,
@@ -862,11 +880,34 @@ class Downloader:
                 for url in batch
             ]
             batch_results = await gather(*tasks, return_exceptions=True)
-            for res in batch_results:
+            for url, res in zip(batch, batch_results):
                 if isinstance(res, Path):
                     results.append(res)
+                elif isinstance(res, BaseException):
+                    failed_urls.append((url, res))
+                    logger.warning(
+                        f"[DownloadBatch] 单张图片下载失败 | url={sanitize_url(url)} | "
+                        f"platform={platform or '?'} | reason={res}"
+                    )
+                else:
+                    failed_urls.append((url, RuntimeError(f"unexpected result: {res!r}")))
+                    logger.warning(
+                        f"[DownloadBatch] 单张图片返回异常 | url={sanitize_url(url)} | result={res!r}"
+                    )
+            # 批次间延迟，避免对 CDN 造成压力
             if i + batch_size < len(urls):
                 await sleep(0.2)
+
+        if failed_urls:
+            logger.warning(
+                f"[DownloadBatch] 整体完成 | 成功={len(results)}/{len(urls)} | "
+                f"失败={len(failed_urls)} | platform={platform or '?'}"
+            )
+        else:
+            self.cfg.verbose(
+                f"[DownloadBatch] 整体完成 | 全部成功 {len(results)}/{len(urls)} | platform={platform or '?'}"
+            )
+
         return results
 
     # ---------- 请求间随机延迟 ----------
