@@ -41,6 +41,8 @@ class ParserPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         self.cfg = PluginConfig(config, context=context)
+        # 下载器
+        self.downloader = Downloader(self.cfg)
         # 渲染缓存管理器
         self.render_cache = RenderCacheManager(
             cache_dir=self.cfg.cache_dir,
@@ -54,8 +56,6 @@ class ParserPlugin(Star):
             cache_manager=self.render_cache,
             downloader=self.downloader,
         )
-        # 下载器
-        self.downloader = Downloader(self.cfg)
         # 视频下载缓存
         self.video_cache = VideoCacheManager(
             cache_dir=self.cfg.cache_dir,
