@@ -1,12 +1,13 @@
 import asyncio
 import uuid
+from asyncio import sleep
 from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from functools import lru_cache, wraps
 from io import BytesIO
 from pathlib import Path
-from typing import ClassVar, ParamSpec, TypeVar
+from typing import TYPE_CHECKING, ClassVar, ParamSpec, TypeVar
 
 import aiofiles
 from apilmoji import Apilmoji, EmojiCDNSource
@@ -18,6 +19,10 @@ from astrbot.api import logger
 from .cache import RenderCacheManager
 from .config import PluginConfig
 from .data import GraphicsContent, ParseResult
+from .utils import generate_file_name, sanitize_url
+
+if TYPE_CHECKING:
+    from .download import Downloader
 
 # 定义类型变量
 P = ParamSpec("P")
@@ -321,9 +326,11 @@ class Renderer:
         self,
         config: PluginConfig,
         cache_manager: RenderCacheManager | None = None,
+        downloader: "Downloader | None" = None,
     ):
         self.cfg = config
         self.cache = cache_manager
+        self.downloader = downloader
         self.EMOJI_SOURCE = EmojiCDNSource(
             base_url=self.cfg.emoji_cdn,
             style=self.cfg.emoji_style,
@@ -393,7 +400,7 @@ class Renderer:
         self,
         result: ParseResult,
         not_repost: bool = True,
-    ) -> PILImage:
+    ) -> PILImage | None:
         """创建卡片图片（用于递归调用）
 
         Args:
@@ -401,7 +408,7 @@ class Renderer:
             not_repost: 是否为非转发内容，转发内容为 False
 
         Returns:
-            PIL Image 对象
+            PIL Image 对象；当 sections 为空时（如降级到纯文本）返回 None
         """
         # 计算必要参数
         card_width = self.DEFAULT_CARD_WIDTH
@@ -409,6 +416,9 @@ class Renderer:
 
         # 计算各部分内容的高度
         sections = await self._calculate_sections(result, content_width)
+        if not sections:
+            # 显式降级为纯文本
+            return None
 
         # 计算总高度
         card_height = sum(section.height for section in sections)
@@ -546,6 +556,12 @@ class Renderer:
             cfg: 可选的有效配置（如群覆盖后的配置）。留空使用 Renderer 初始化时的全局配置。
         """
         cfg = cfg or self.cfg
+
+        # 卡片渲染总开关：开启后所有渲染流程被跳过，由调用方走纯文本降级
+        if getattr(cfg, "card_render_disabled", False):
+            logger.info("[Render] 卡片渲染已禁用，使用纯文本发送")
+            return None
+
         cache_key: str | None = None
         if self.cache and cfg.perf_render_cache_enabled:
             try:
@@ -586,6 +602,131 @@ class Renderer:
                 logger.debug(f"[Renderer] 写入缓存失败: {e}")
 
         return cache
+
+    # ---------- 卡片渲染容错与降级 ----------
+
+    async def _safe_download_image(
+        self,
+        url: str | None,
+        *,
+        headers: dict[str, str] | None = None,
+        proxy: str | None = None,
+        cfg: PluginConfig | None = None,
+        file_name: str | None = None,
+    ) -> Path | None:
+        """带重试与降级的封面图/装饰图下载。
+
+        重试配置由 cfg.card_render_retry_enabled / cfg.card_render_retry_count /
+        cfg.card_render_retry_delay 控制，最终失败时返回 None。
+        优先复用 self.downloader 已有的 ClientSession；未注入时降级为局部临时会话。
+        """
+        cfg = cfg or self.cfg
+        if not url:
+            return None
+
+        max_retries = min(5, max(1, int(getattr(cfg, "card_render_retry_count", 2))))
+        delay = float(getattr(cfg, "card_render_retry_delay", 0.5))
+        retry_enabled = bool(getattr(cfg, "card_render_retry_enabled", True))
+        attempts = max_retries + 1 if retry_enabled else 1
+        target_name = file_name or generate_file_name(url)
+        target_path = self.cfg.cache_dir / target_name
+
+        client = self.downloader.client if self.downloader else None
+        last_exc: BaseException | None = None
+        for attempt in range(attempts):
+            try:
+                if client is not None:
+                    async with client.get(
+                        url,
+                        headers=headers or {},
+                        allow_redirects=True,
+                        proxy=proxy,
+                    ) as resp:
+                        if resp.status >= 400:
+                            body = (await resp.text())[:200]
+                            raise RuntimeError(
+                                f"HTTP {resp.status} {resp.reason}: {body}"
+                            )
+                        data = await resp.read()
+                else:
+                    # 兜底：没有 downloader 时新建一次性会话
+                    import aiohttp
+
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(
+                            url,
+                            headers=headers or {},
+                            allow_redirects=True,
+                            proxy=proxy,
+                        ) as resp:
+                            if resp.status >= 400:
+                                body = (await resp.text())[:200]
+                                raise RuntimeError(
+                                    f"HTTP {resp.status} {resp.reason}: {body}"
+                                )
+                            data = await resp.read()
+
+                async with aiofiles.open(target_path, "wb") as f:
+                    await f.write(data)
+                if attempt > 0:
+                    logger.info(
+                        f"[Render] 图片下载成功（重试 {attempt} 次后）"
+                    )
+                return target_path
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                if attempt < attempts - 1:
+                    logger.warning(
+                        f"[Render] 图片下载失败，{delay}s 后重试 ({attempt + 1}/{max_retries})"
+                    )
+                    await sleep(delay)
+                else:
+                    logger.warning(
+                        f"[Render] 图片下载失败，已跳过 | url={sanitize_url(url)} | reason={exc}"
+                    )
+        return None
+
+    def _resolve_placeholder_image(self, cfg: PluginConfig) -> Path | None:
+        """解析占位图路径，支持绝对路径或相对插件数据目录的路径。"""
+        raw = (getattr(cfg, "card_placeholder_image", "") or "").strip()
+        if not raw:
+            # 默认占位图：插件目录下的 logo.png
+            default = self.cfg.plugin_dir / "logo.png"
+            return default if default.is_file() else None
+        path = Path(raw).expanduser()
+        if not path.is_absolute():
+            path = self.cfg.data_dir / path
+        return path if path.is_file() else None
+
+    def _cover_fallback(
+        self,
+        url: str | None,
+        cfg: PluginConfig,
+    ) -> tuple[Path | None, bool]:
+        """封面图降级处理。
+
+        Returns:
+            (resolved_path, force_text_only)
+            force_text_only 为 True 时表示应当放弃整张卡片，退化为纯文本。
+        """
+        mode = (getattr(cfg, "card_render_fallback_mode", "placeholder") or "placeholder").lower()
+        if mode == "text_only":
+            logger.warning("[Render] 封面图下载失败，降级为纯文本发送")
+            return None, True
+        if mode == "skip":
+            logger.warning("[Render] 封面图下载失败，跳过封面区域")
+            return None, False
+        # placeholder
+        placeholder = self._resolve_placeholder_image(cfg)
+        if placeholder:
+            logger.warning(
+                f"[Render] 封面图下载失败，使用默认占位图 | url={sanitize_url(url) if url else '?'}"
+            )
+            return placeholder, False
+        logger.warning(
+            "[Render] 封面图下载失败，未找到占位图，跳过封面区域"
+        )
+        return None, False
 
     async def _render_in_thread_pool(
         self,
@@ -718,9 +859,28 @@ class Renderer:
             sections.append(TitleSectionData(height=title_height, lines=title_lines))
 
         # 3. 封面，图集，图文内容
-        if cover_img := self._load_and_resize_cover(
-            await result.cover_path,
-            content_width=content_width,
+        cover_path = None
+        cover_force_text_only = False
+        try:
+            cover_path = await result.cover_path
+        except Exception as cover_exc:
+            logger.warning(
+                f"[Render] 封面图下载失败 | reason={cover_exc}"
+            )
+            cover_path = None
+
+        if not cover_path or not cover_path.exists():
+            cover_path, cover_force_text_only = self._cover_fallback(None, cfg)
+
+        if cover_force_text_only:
+            # 放弃卡片渲染，由 _create_card_image 返回 None 让 render_card 返回 None
+            return []
+
+        if cover_path and (
+            cover_img := self._load_and_resize_cover(
+                cover_path,
+                content_width=content_width,
+            )
         ):
             sections.append(
                 CoverSectionData(height=cover_img.height, cover_img=cover_img)

@@ -258,6 +258,19 @@ class GroupOverride(ConfigNode):
     memory_monitor_interval: int | None
     memory_monitor_warning_threshold: int | None
 
+    parse_retry_enabled: bool | None
+    parse_retry_immediate: bool | None
+    parse_retry_count: int | None
+
+    card_render_disabled: bool | None
+    card_render_retry_enabled: bool | None
+    card_render_retry_count: int | None
+    card_render_retry_delay: float | None
+    card_render_fallback_mode: str | None
+    card_placeholder_image: str | None
+
+    range_download_resume_enabled: bool | None
+
 
 class EffectiveConfig:
     """
@@ -344,6 +357,30 @@ class PluginConfig(ConfigNode):
     download_timeout: int
     download_retry_times: int
     common_timeout: int
+
+    download_concurrency_limit: int
+    download_delay_min: float
+    download_delay_max: float
+    download_batch_size: int
+    download_dynamic_concurrency: bool
+    download_retry_wait_enabled: bool
+    download_retry_delay_base: float
+    download_retry_delay_limit: float
+
+    max_concurrent_tasks: int
+
+    parse_retry_enabled: bool
+    parse_retry_immediate: bool
+    parse_retry_count: int
+
+    card_render_disabled: bool
+    card_render_retry_enabled: bool
+    card_render_retry_count: int
+    card_render_retry_delay: float
+    card_render_fallback_mode: str
+    card_placeholder_image: str
+
+    range_download_resume_enabled: bool
 
     download_concurrency_limit: int
     download_delay_min: float

@@ -1,5 +1,52 @@
 # 更新日志
 
+## v1.6.2
+
+### 新增
+
+- **解析阶段重试**（`core/parsers/base.py`）
+  - `parse()` 入口统一包装 `_invoke_handler_with_retry`，新增 `request_with_retry` 协程供子类调用
+  - 默认重试 3 次，最大不超过 5 次；间隔固定档位：普通错误 0.2s / 0.5s / 1.0s，5xx 服务器错误 2s / 4s / 6s
+  - B 站凭证过期（`-101` / SESSDATA / 登录相关关键字）跳过重试直接抛 `ParseException` 并打印 `[Parser] B站凭证已过期，请重新执行 blogin 登录`
+  - 新增 `parse_retry_enabled` / `parse_retry_immediate` / `parse_retry_count` 三个配置
+
+- **卡片渲染容错与降级**（`core/render.py`）
+  - 卡片渲染循环对单张图片失败仅记录 WARNING 后跳过，不影响整体卡片
+  - 新增 `_safe_download_image` 提供封面图独立重试与日志：`[Render] 图片下载失败，0.5s 后重试 (1/2)` / `[Render] 图片下载成功（重试 1 次后）`
+  - 新增 `card_render_disabled` 总开关：开启后所有卡片渲染被完全跳过，结果走纯文本发送
+  - 封面图降级三种模式：`placeholder`（默认占位图）/ `skip`（跳过封面区域）/ `text_only`（放弃卡片降级纯文本）
+  - 降级过程通过 `_cover_fallback` 实现，对应日志：`[Render] 封面图下载失败，使用默认占位图` 等
+
+- **分块下载断点续传**（`core/download.py`）
+  - 每个分块对应 `<filename>.part_<idx>.tmp` 临时文件，记录已下载字节数
+  - 续传时根据临时文件大小生成 `Range: bytes=<start + downloaded>-` 头部继续下载
+  - 已有完成的分块直接合并到目标文件并跳过
+  - 服务器返回 200（不支持 Range）时自动回退到完整下载
+  - 插件启动时调用 `cleanup_stale_range_temp_files` 删除超过 24 小时的临时文件
+  - 新增 `range_download_resume_enabled` 配置（默认 true）
+
+- **任务汇总日志**（`main.py` / `core/sender.py`）
+  - `MessageSender` 新增 `last_download_stats` 与 `last_render_stats` 暴露下载/渲染状态
+  - 任务结束后输出 `[Task] 汇总: 解析成功 | 下载成功 (26.64MB) | 渲染卡片成功 | 下载视频时间 6.32s | 总耗时 12.38s`
+  - 发送流程中插入 `正在发送...` / `发送成功，耗时 Xs 一共耗时 Ys` 提示
+
+### 配置项
+
+新增全局 + 群覆盖配置：
+
+- `parse_retry_enabled`（bool，默认 true）
+- `parse_retry_immediate`（bool，默认 false）
+- `parse_retry_count`（int，默认 3，1-5）
+- `card_render_disabled`（bool，默认 false）
+- `card_render_retry_enabled`（bool，默认 true）
+- `card_render_retry_count`（int，默认 2，1-5）
+- `card_render_retry_delay`（float，默认 0.5，0.3-2）
+- `card_render_fallback_mode`（enum，默认 placeholder）
+- `card_placeholder_image`（string，默认 logo.png）
+- `range_download_resume_enabled`（bool，默认 true）
+
+所有重试次数受最大 5 次限制；配置变更仅对新任务生效；断点续传实时读取开关状态。
+
 ## v1.6.1
 
 ### 修复
@@ -17,7 +64,7 @@
 
 ### 新增：下载优化完整方案（全部默认关闭）
 
-本次更新引入 8 项下载层优化，所有开关默认关闭，用户可在配置面板按需开启。
+本次更新引入 8 项下载层优化，所有开关默认关闭，可在配置面板按需开启。
 
 - **DNS 预解析**（`dns_prefetch`）
   - 新增 `core/dns_cache.py`

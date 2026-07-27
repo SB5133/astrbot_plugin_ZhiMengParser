@@ -58,6 +58,8 @@ class MessageSender:
     def __init__(self, config: PluginConfig, renderer: Renderer):
         self.cfg = config
         self.renderer = renderer
+        self.last_download_stats: dict[str, Any] = {}
+        self.last_render_stats: dict[str, Any] = {}
 
     @staticmethod
     def _clamp_range(lo: int | None, hi: int | None) -> tuple[float, float]:
@@ -525,21 +527,61 @@ class MessageSender:
         groups = self._resolve_groups(result)
         self.cfg.verbose(f"解析结果分组数: {len(groups)}")
 
+        # 累积本次任务的下载/渲染统计
+        download_ok = False
+        download_size = 0
+        download_elapsed = 0.0
+        render_ok = False
+        import time as _time
+        download_start = _time.time()
+
         sent = False
         for idx, group in enumerate(groups):
             tip = parser_tip if idx == 0 else None
             text = parse_text_segments if idx == 0 else None
-            sent = (
-                await self._send_group(
-                    event,
-                    result,
-                    group,
-                    parser_tip=tip,
-                    parse_text_segments=text,
-                    merge_quote_id=merge_quote_id,
-                )
-                or sent
+            ret = await self._send_group(
+                event,
+                result,
+                group,
+                parser_tip=tip,
+                parse_text_segments=text,
+                merge_quote_id=merge_quote_id,
             )
+            if isinstance(ret, tuple) and len(ret) == 4:
+                group_dl_ok, group_size, group_dl_elapsed, group_render_ok = ret
+            else:
+                group_dl_ok = bool(ret)
+                group_size = 0
+                group_dl_elapsed = 0.0
+                group_render_ok = False
+            if group_dl_ok:
+                download_ok = True
+                download_size += group_size
+                download_elapsed += group_dl_elapsed
+            if group_render_ok:
+                render_ok = True
+            sent = sent or group_dl_ok or group_render_ok
+
+        # 兜底：若分组未捕获到下载大小，遍历 video_contents 累加实际文件大小
+        if download_size <= 0:
+            for v in getattr(result, "video_contents", []):
+                try:
+                    p = await v.get_path()
+                    if p and p.exists():
+                        download_size += p.stat().st_size
+                        download_ok = True
+                except Exception:
+                    pass
+
+        if download_elapsed <= 0:
+            download_elapsed = _time.time() - download_start
+
+        self.last_download_stats = {
+            "ok": download_ok,
+            "size": download_size,
+            "elapsed": download_elapsed,
+        }
+        self.last_render_stats = {"ok": render_ok}
 
         # 主流程已单独发送过解析文本，等价于已发送内容
         if parse_text_already_sent:

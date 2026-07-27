@@ -781,6 +781,86 @@
         },
         "default": 5
     },
+    "parse_retry_enabled": {
+        "description": "启用解析请求重试",
+        "hint": "开启后，解析阶段 API 请求失败会自动重试。B 站凭证过期 (-101) 会跳过重试直接提示登录",
+        "type": "bool",
+        "default": true
+    },
+    "parse_retry_immediate": {
+        "description": "解析重试立即执行",
+        "hint": "关闭后按 0.2s / 0.5s / 1.0s 固定退避重试；开启后失败立即重试不等待",
+        "type": "bool",
+        "default": false
+    },
+    "parse_retry_count": {
+        "description": "解析重试次数",
+        "hint": "解析阶段 API 失败时的最大重试次数（不含首次），最大不超过 5",
+        "type": "int",
+        "slider": {
+            "min": 1,
+            "max": 5,
+            "step": 1
+        },
+        "default": 3
+    },
+    "card_render_disabled": {
+        "description": "跳过所有卡片渲染",
+        "hint": "开启后所有卡片渲染流程被完全跳过，所有解析结果统一以纯文本格式发送。优先级最高",
+        "type": "bool",
+        "default": false
+    },
+    "card_render_retry_enabled": {
+        "description": "启用封面图重试",
+        "hint": "开启后，封面图下载失败会按配置次数重试",
+        "type": "bool",
+        "default": true
+    },
+    "card_render_retry_count": {
+        "description": "封面图重试次数",
+        "hint": "封面图下载失败的最大重试次数（不含首次），最大不超过 5",
+        "type": "int",
+        "slider": {
+            "min": 1,
+            "max": 5,
+            "step": 1
+        },
+        "default": 2
+    },
+    "card_render_retry_delay": {
+        "description": "封面图重试等待时间（秒）",
+        "hint": "封面图重试之间的等待时间",
+        "type": "float",
+        "slider": {
+            "min": 0.3,
+            "max": 2,
+            "step": 0.1
+        },
+        "default": 0.5
+    },
+    "card_render_fallback_mode": {
+        "description": "封面图失败降级模式",
+        "hint": "placeholder=使用默认占位图；skip=跳过封面区域；text_only=放弃卡片降级为纯文本",
+        "type": "string",
+        "options": [
+            "placeholder",
+            "skip",
+            "text_only"
+        ],
+        "default": "placeholder"
+    },
+    "card_placeholder_image": {
+        "description": "封面占位图路径",
+        "hint": "占位图路径，支持绝对路径或相对插件数据目录的路径。留空使用插件自带 logo.png",
+        "type": "string",
+        "default": "logo.png"
+    },
+    "range_download_resume_enabled": {
+        "description": "启用分块下载断点续传",
+        "hint": "开启后，分块下载中断时会保留临时文件，下次下载从已下载位置继续",
+        "type": "bool",
+        "default": true
+    },
     "common_timeout": {
         "description": "普通请求超时时间",
         "hint": "普通请求超时时间，单位秒。用于一些普通的请求 ",
@@ -1108,6 +1188,76 @@
                             "max": 20,
                             "step": 1
                         },
+                        "default": null
+                    },
+                    "parse_retry_enabled": {
+                        "description": "启用解析请求重试",
+                        "type": "bool",
+                        "default": null
+                    },
+                    "parse_retry_immediate": {
+                        "description": "解析重试立即执行",
+                        "type": "bool",
+                        "default": null
+                    },
+                    "parse_retry_count": {
+                        "description": "解析重试次数",
+                        "type": "int",
+                        "slider": {
+                            "min": 1,
+                            "max": 5,
+                            "step": 1
+                        },
+                        "default": null
+                    },
+                    "card_render_disabled": {
+                        "description": "跳过所有卡片渲染",
+                        "type": "bool",
+                        "default": null
+                    },
+                    "card_render_retry_enabled": {
+                        "description": "启用封面图重试",
+                        "type": "bool",
+                        "default": null
+                    },
+                    "card_render_retry_count": {
+                        "description": "封面图重试次数",
+                        "type": "int",
+                        "slider": {
+                            "min": 1,
+                            "max": 5,
+                            "step": 1
+                        },
+                        "default": null
+                    },
+                    "card_render_retry_delay": {
+                        "description": "封面图重试等待时间（秒）",
+                        "type": "float",
+                        "slider": {
+                            "min": 0.3,
+                            "max": 2,
+                            "step": 0.1
+                        },
+                        "default": null
+                    },
+                    "card_render_fallback_mode": {
+                        "description": "封面图失败降级模式",
+                        "type": "string",
+                        "options": [
+                            "placeholder",
+                            "skip",
+                            "text_only"
+                        ],
+                        "default": ""
+                    },
+                    "card_placeholder_image": {
+                        "description": "封面占位图路径",
+                        "type": "string",
+                        "default": ""
+                    },
+                    "range_download_resume_enabled": {
+                        "description": "启用分块下载断点续传",
+                        "type": "bool",
                         "default": null
                     },
                     "dns_prefetch_enabled": {

@@ -7,8 +7,10 @@ from pathlib import Path
 from re import Match, Pattern, compile
 from typing import TYPE_CHECKING, Any, ClassVar, TypeVar, cast
 
-from aiohttp import ClientError, ClientSession, ClientTimeout
+from aiohttp import ClientError, ClientResponse, ClientSession, ClientTimeout
 from typing_extensions import Unpack
+
+from astrbot.api import logger
 
 from ..config import ParserItem, PluginConfig
 from ..constants import ANDROID_HEADER, COMMON_HEADER, IOS_HEADER
@@ -141,7 +143,184 @@ class BaseParser:
         Raises:
             ParseException: 解析失败时抛出
         """
-        return await self._handlers[keyword](self, searched)
+        handler = self._handlers[keyword]
+        return await self._invoke_handler_with_retry(handler, searched)
+
+    @staticmethod
+    def _is_bilibili_auth_error(exc: BaseException) -> bool:
+        """检测是否为 B 站凭证过期 / 登录相关错误（code -101、SESSDATA 失效等）"""
+        msg = str(exc).lower()
+        if not msg:
+            return False
+        markers = (
+            "-101",
+            "sessdata",
+            "未登录",
+            "未登录或",
+            "账号未登录",
+            "请先登录",
+            "login",
+            "credential",
+            "凭证",
+            "登录过期",
+        )
+        return any(marker in msg for marker in markers)
+
+    @staticmethod
+    def _is_5xx_error(exc: BaseException) -> bool:
+        """检测是否为 5xx 服务器错误"""
+        msg = str(exc).lower()
+        if not msg:
+            return False
+        markers = (
+            "500 ",
+            " 500",
+            "502 ",
+            " 502",
+            "503 ",
+            " 503",
+            "504 ",
+            " 504",
+            "internal server error",
+            "bad gateway",
+            "service unavailable",
+            "gateway timeout",
+            "http 5",
+        )
+        return any(marker in msg for marker in markers)
+
+    async def _invoke_handler_with_retry(
+        self,
+        handler: HandlerFunc[T],
+        searched: Match[str],
+    ) -> ParseResult:
+        """调用 handler 并应用解析阶段重试配置。
+
+        重试退避为固定档位：
+            普通错误: 0.2s, 0.5s, 1.0s
+            5xx 错误: 2s, 4s, 6s
+        """
+        if not self.cfg.parse_retry_enabled:
+            return await handler(self, searched)
+
+        max_retries = min(5, max(1, int(getattr(self.cfg, "parse_retry_count", 3))))
+        immediate = bool(getattr(self.cfg, "parse_retry_immediate", False))
+
+        last_exc: BaseException | None = None
+        for attempt in range(max_retries + 1):
+            try:
+                return await handler(self, searched)
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+
+                # B 站凭证过期：跳过重试直接抛出
+                if self._is_bilibili_auth_error(exc):
+                    logger.warning(
+                        "[Parser] B站凭证已过期，请重新执行 blogin 登录"
+                    )
+                    raise ParseException(
+                        "B站凭证已过期，请重新执行 blogin 登录"
+                    ) from exc
+
+                if attempt >= max_retries:
+                    logger.warning(
+                        f"[Parser] API 请求最终失败，已重试 {attempt} 次"
+                    )
+                    raise
+
+                if immediate:
+                    logger.warning(
+                        f"[Parser] API 请求失败，立即重试 ({attempt + 1}/{max_retries})（等待已关闭）"
+                    )
+                    continue
+
+                if self._is_5xx_error(exc):
+                    wait = [2.0, 4.0, 6.0][min(attempt, 2)]
+                else:
+                    wait = [0.2, 0.5, 1.0][min(attempt, 2)]
+                logger.warning(
+                    f"[Parser] API 请求失败，{wait}s 后重试 ({attempt + 1}/{max_retries})"
+                )
+                await sleep(wait)
+
+        # 不可达，保持类型安全
+        if last_exc:
+            raise last_exc
+        raise ParseException("解析失败：未知错误")
+
+    async def request_with_retry(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+        proxy: str | None = None,
+        **kwargs: Any,
+    ) -> ClientResponse:
+        """带解析重试配置的 HTTP 请求。
+
+        使用 ``self.session`` 发起请求，遵循 ``parse_retry_enabled`` /
+        ``parse_retry_immediate`` / ``parse_retry_count`` 三个配置；遇到
+        B 站凭证过期错误时直接抛出，不进入重试循环。
+        """
+        if not self.cfg.parse_retry_enabled:
+            return await self.session.request(
+                method, url, headers=headers, proxy=proxy if proxy is not None else self.proxy, **kwargs
+            )
+
+        max_retries = min(5, max(1, int(getattr(self.cfg, "parse_retry_count", 3))))
+        immediate = bool(getattr(self.cfg, "parse_retry_immediate", False))
+
+        last_exc: BaseException | None = None
+        for attempt in range(max_retries + 1):
+            try:
+                resp = await self.session.request(
+                    method,
+                    url,
+                    headers=headers,
+                    proxy=proxy if proxy is not None else self.proxy,
+                    **kwargs,
+                )
+                # 4xx/5xx 也视为可重试错误
+                if resp.status >= 500:
+                    body_snippet = (await resp.text())[:200]
+                    await resp.release()
+                    raise ClientError(
+                        f"HTTP {resp.status} {resp.reason}: {body_snippet}"
+                    )
+                return resp
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                if self._is_bilibili_auth_error(exc):
+                    logger.warning("[Parser] B站凭证已过期，请重新执行 blogin 登录")
+                    raise ParseException(
+                        "B站凭证已过期，请重新执行 blogin 登录"
+                    ) from exc
+
+                if attempt >= max_retries:
+                    logger.warning(
+                        f"[Parser] API 请求最终失败，已重试 {attempt} 次"
+                    )
+                    raise
+
+                if immediate:
+                    logger.warning(
+                        f"[Parser] API 请求失败，立即重试 ({attempt + 1}/{max_retries})（等待已关闭）"
+                    )
+                    continue
+
+                if self._is_5xx_error(exc):
+                    wait = [2.0, 4.0, 6.0][min(attempt, 2)]
+                else:
+                    wait = [0.2, 0.5, 1.0][min(attempt, 2)]
+                logger.warning(
+                    f"[Parser] API 请求失败，{wait}s 后重试 ({attempt + 1}/{max_retries})"
+                )
+                await sleep(wait)
+
+        if last_exc:
+            raise last_exc
+        raise ParseException("请求失败：未知错误")
 
     async def parse_with_redirect(
         self,

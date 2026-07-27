@@ -49,7 +49,11 @@ class ParserPlugin(Star):
             enabled=self.cfg.perf_render_cache_enabled,
         )
         # 渲染器
-        self.renderer = Renderer(self.cfg, cache_manager=self.render_cache)
+        self.renderer = Renderer(
+            self.cfg,
+            cache_manager=self.render_cache,
+            downloader=self.downloader,
+        )
         # 下载器
         self.downloader = Downloader(self.cfg)
         # 视频下载缓存
@@ -87,6 +91,11 @@ class ParserPlugin(Star):
         await asyncio.to_thread(Renderer.load_resources)
         # 注册解析器
         self._register_parser()
+        # 清理过期的分块下载临时文件
+        try:
+            await self.downloader.cleanup_stale_range_temp_files()
+        except Exception as e:
+            logger.warning(f"[RangeDownload] 清理过期临时文件失败: {e}")
         # 启动内存监控
         try:
             await self.memory_monitor.start()
@@ -279,6 +288,18 @@ class ParserPlugin(Star):
         umo: str,
     ):
         """处理单个链接的完整流程（仲裁、防抖、解析、发送）"""
+        import time as _time
+
+        # ---------- 汇总统计 ----------
+        task_start = _time.time()
+        stats = {
+            "parse_ok": False,
+            "download_ok": False,
+            "download_size": 0,
+            "video_download_seconds": 0.0,
+            "render_ok": False,
+        }
+
         # 仲裁机制
         is_win = True
         if cfg.arbiter and isinstance(event, AiocqhttpMessageEvent) and not event.is_private_chat():
@@ -329,8 +350,10 @@ class ParserPlugin(Star):
         # 解析
         try:
             parse_res = await parser.parse(keyword, searched)
+            stats["parse_ok"] = True
         except Exception as e:
             logger.warning(f"[Parser] 解析失败 | umo={umo} | link={link} | reason={e}")
+            self._log_task_summary(stats, task_start)
             return
 
         # 基于资源ID防抖
@@ -358,6 +381,11 @@ class ParserPlugin(Star):
         # 发送解析结果（媒体/卡片等），同时传入缓存的解析提示与解析文本用于合并套娃
         parser_tip = getattr(event, "_parser_tip", None)
         merge_quote_id = msg_id if cfg.merge_quote_target == "original" else None
+
+        # ---------- 记录视频下载开始时间 ----------
+        video_download_start = _time.time()
+        logger.info("正在发送...")
+
         try:
             await sender.send_parse_result(
                 event,
@@ -369,7 +397,28 @@ class ParserPlugin(Star):
             )
         except Exception as e:
             logger.warning(f"[Sender] 发送解析结果失败 | umo={umo} | link={link} | reason={e}")
+            self._log_task_summary(stats, task_start)
             return
+
+        # ---------- 发送完成：统计 ----------
+        send_elapsed = _time.time() - video_download_start
+        video_download_seconds = send_elapsed  # send_parse_result 包含视频下载+渲染+发送
+        total_elapsed = _time.time() - task_start
+
+        # 收集下载/渲染状态：通过 sender 暴露的统计
+        try:
+            render_stats = getattr(sender, "last_render_stats", None) or {}
+            stats["render_ok"] = bool(render_stats.get("ok"))
+            dl_stats = getattr(sender, "last_download_stats", None) or {}
+            if dl_stats:
+                stats["download_ok"] = bool(dl_stats.get("ok"))
+                stats["download_size"] = int(dl_stats.get("size", 0) or 0)
+                stats["video_download_seconds"] = float(
+                    dl_stats.get("elapsed", video_download_seconds) or 0.0
+                )
+        except Exception:
+            # sender 未提供详细统计时，使用兜底估算
+            stats["video_download_seconds"] = video_download_seconds
 
         # 解析完成后@用户 + 自定义文本（可选，不合并）
         if cfg.at_after_parse:
@@ -378,11 +427,35 @@ class ParserPlugin(Star):
             except Exception as e:
                 logger.warning(f"[Sender] @用户消息发送失败 | umo={umo} | reason={e}")
 
+        logger.info(
+            f"发送成功，耗时{send_elapsed:.2f}s 一共耗时{total_elapsed:.2f}s"
+        )
+        self._log_task_summary(stats, task_start)
+
         # 每次解析完成后主动检查内存，触发恢复
         try:
             await self.memory_monitor.check_now()
         except Exception:
             pass
+
+    @staticmethod
+    def _log_task_summary(stats: dict, task_start: float) -> None:
+        """输出任务汇总日志"""
+        import time as _time
+
+        total_elapsed = _time.time() - task_start
+        parse_ok = "解析成功" if stats.get("parse_ok") else "解析失败"
+        if stats.get("download_ok"):
+            size_mb = stats.get("download_size", 0) / 1024 / 1024
+            download_part = f"下载成功 ({size_mb:.2f}MB)"
+        else:
+            download_part = "下载未执行"
+        render_part = "渲染卡片成功" if stats.get("render_ok") else "渲染卡片未执行"
+        video_seconds = stats.get("video_download_seconds", 0.0)
+        logger.info(
+            f"[Task] 汇总: {parse_ok} | {download_part} | {render_part} | "
+            f"下载视频时间 {video_seconds:.2f}s  |  总耗时 {total_elapsed:.2f}s"
+        )
 
     @staticmethod
     def _get_source_message_id(event: AstrMessageEvent) -> int | str | None:

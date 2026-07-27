@@ -550,8 +550,59 @@ class Downloader:
         platform: str | None,
         part_idx: int,
     ) -> bool:
-        """下载一个分块到文件指定位置"""
-        part_headers = {**headers, "Range": f"bytes={start}-{end}"}
+        """下载一个分块到文件指定位置。
+
+        支持断点续传：
+        - 临时文件 ``<file>.part_<part_idx>.tmp`` 记录该分块当前已下载字节数。
+        - 启动时若临时文件存在，则从 ``start + downloaded`` 处继续下载。
+        - 当服务器返回 200（不支持 Range）时，自动回退到完整下载（直接返回 False 让上层走单连接）。
+        """
+        part_headers = dict(headers)
+        part_size = end - start + 1
+        tmp_path = file_path.with_name(f"{file_path.name}.part_{part_idx}.tmp")
+        resume_enabled = bool(getattr(self.cfg, "range_download_resume_enabled", True))
+
+        # 计算已下载进度（基于临时文件）
+        downloaded = 0
+        if resume_enabled and tmp_path.exists():
+            try:
+                downloaded = tmp_path.stat().st_size
+                if downloaded >= part_size:
+                    # 该分块已完成，直接合并到最终文件
+                    logger.info(
+                        f"[RangeDownload] 分块 {file_path.name} part_{part_idx} 已完成，跳过"
+                    )
+                    async with aiofiles.open(tmp_path, "rb") as src, aiofiles.open(
+                        file_path, "r+b"
+                    ) as dst:
+                        await dst.seek(start)
+                        await src.seek(0)
+                        while True:
+                            buf = await src.read(1024 * 1024)
+                            if not buf:
+                                break
+                            await dst.write(buf)
+                    await safe_unlink(tmp_path)
+                    return True
+                if downloaded > 0:
+                    resume_start = start + downloaded
+                    logger.warning(
+                        f"[RangeDownload] 检测到未完成的分块: {file_path.name} "
+                        f"part_{part_idx}（已下载 {downloaded / 1024 / 1024:.2f}MB/"
+                        f"{part_size / 1024 / 1024:.2f}MB），继续下载"
+                    )
+                    part_headers["Range"] = f"bytes={resume_start}-{end}"
+                else:
+                    part_headers["Range"] = f"bytes={start}-{end}"
+            except Exception as e:
+                self.cfg.verbose(
+                    f"[RangeDownload] 检查临时分块文件失败: {e}"
+                )
+                downloaded = 0
+                part_headers["Range"] = f"bytes={start}-{end}"
+        else:
+            part_headers["Range"] = f"bytes={start}-{end}"
+
         for attempt in range(3):
             try:
                 async with self.client.get(
@@ -560,18 +611,59 @@ class Downloader:
                     allow_redirects=True,
                     proxy=proxy,
                 ) as response:
+                    # 服务器返回 200 说明不支持 Range 请求
+                    if response.status == 200 and "Range" in part_headers:
+                        logger.warning(
+                            f"[RangeDownload] 服务器不支持 Range 请求，回退到完整下载"
+                        )
+                        await safe_unlink(tmp_path)
+                        return False
                     if response.status in (403, 416):
                         logger.warning(
                             f"[RangeDownload] {platform or '?'} 分块 {part_idx} 返回 {response.status}，回退单连接"
                         )
+                        await safe_unlink(tmp_path)
                         return False
                     if response.status >= 400:
                         raise ClientError(f"HTTP {response.status}")
 
-                    async with aiofiles.open(file_path, "r+b") as f:
-                        await f.seek(start)
+                    write_offset = start + downloaded
+                    async with aiofiles.open(tmp_path, "wb") as tmpf:
+                        await tmpf.seek(downloaded)
+                        received = 0
                         async for chunk in response.content.iter_chunked(1024 * 1024):
-                            await f.write(chunk)
+                            await tmpf.write(chunk)
+                            received += len(chunk)
+                            downloaded += len(chunk)
+                    # 写入最终文件
+                    async with aiofiles.open(file_path, "r+b") as f:
+                        await f.seek(write_offset)
+                        async with aiofiles.open(tmp_path, "rb") as tmpf:
+                            await tmpf.seek(0)
+                            await f.write(await tmpf.read())
+
+                # 校验下载大小
+                if downloaded < part_size:
+                    # 文件未完整，继续重试（保留 tmp 状态）
+                    if attempt < 2:
+                        wait = 1 + attempt
+                        self.cfg.verbose(
+                            f"[RangeDownload] 分块 {part_idx} 不完整 ({downloaded}/{part_size})，{wait}s 后重试"
+                        )
+                        await sleep(wait)
+                        continue
+                    logger.warning(
+                        f"[RangeDownload] 分块 {part_idx} 最终不完整 ({downloaded}/{part_size})，回退单连接"
+                    )
+                    await safe_unlink(tmp_path)
+                    return False
+
+                # 完成：清理临时文件并记录
+                await safe_unlink(tmp_path)
+                if attempt > 0:
+                    logger.info(
+                        f"[RangeDownload] 分块续传成功: {file_path.name} part_{part_idx}（重试 {attempt} 次）"
+                    )
                 return True
             except TimeoutError:
                 if attempt < 2:
@@ -601,7 +693,14 @@ class Downloader:
         proxy: str | None,
         platform: str | None,
     ) -> bool:
-        """执行分块下载，失败返回 False 让上层回退单连接"""
+        """执行分块下载，失败返回 False 让上层回退单连接。
+
+        支持四种场景：
+        - 单块下载中断用 Range 续传
+        - 部分块已完成跳过
+        - 合并时中断重新合并不重新下载块
+        - 服务器不支持 Range 时回退到完整下载
+        """
         parts = self._effective_max_parts(platform, total_size)
         if parts <= 1 or self._range_disabled(platform):
             return False
@@ -624,7 +723,7 @@ class Downloader:
 
         self.cfg.verbose(
             f"[RangeDownload] 开始分块下载 | file={file_path.name} | parts={parts} | "
-            f"size={total_size / 1024 / 1024:.2f}MB | platform={platform or '?'})"
+            f"size={total_size / 1024 / 1024:.2f}MB | platform={platform or '?'}"
         )
 
         try:
@@ -645,16 +744,49 @@ class Downloader:
                     ]
                 )
             if all(results):
+                # 清理可能残留的临时分块文件
+                for i in range(parts):
+                    await safe_unlink(file_path.with_name(f"{file_path.name}.part_{i}.tmp"))
                 self._clear_range_failure(platform)
                 self.cfg.verbose(f"[RangeDownload] 分块下载成功 | file={file_path.name}")
                 return True
         except asyncio.TimeoutError:
             logger.warning("[RangeDownload] 整体下载超时，回退单连接")
 
-        # 失败处理
+        # 失败处理：保留临时文件以便下次续传
         self._record_range_failure(platform)
-        await safe_unlink(file_path)
         return False
+
+    async def cleanup_stale_range_temp_files(self, max_age_seconds: int = 86400) -> int:
+        """清理超过指定时间的过期分块临时文件
+
+        Args:
+            max_age_seconds: 临时文件最大存活时间（秒），默认 24 小时
+
+        Returns:
+            清理的文件数量
+        """
+        if not self.cfg.cache_dir.exists():
+            return 0
+        now = time.time()
+        cleaned = 0
+        for tmp in self.cfg.cache_dir.glob("*.part_*.tmp"):
+            try:
+                age = now - tmp.stat().st_mtime
+                if age > max_age_seconds:
+                    days = age / 86400
+                    logger.info(
+                        f"[RangeDownload] 清理过期临时文件: {tmp.name}（已存在 {days:.1f} 天）"
+                    )
+                    await safe_unlink(tmp)
+                    cleaned += 1
+            except Exception as e:
+                self.cfg.verbose(f"[RangeDownload] 清理临时文件 {tmp.name} 失败: {e}")
+        if cleaned:
+            logger.info(
+                f"[RangeDownload] 临时文件清理完成，共清理 {cleaned} 个"
+            )
+        return cleaned
 
     # ---------- 单连接流式下载 ----------
 
