@@ -77,6 +77,9 @@ class ParserPlugin(Star):
         self.parser_map: dict[str, BaseParser] = {}
         # 关键词 -> 正则 列表
         self.key_pattern_list: list[tuple[str, re.Pattern[str]]] = []
+        # 多链接并发控制
+        self._task_sem = asyncio.Semaphore(self.cfg.max_concurrent_tasks)
+        self._pending_tasks: set[asyncio.Task] = set()
 
     async def initialize(self):
         """加载、重载插件时触发"""
@@ -259,6 +262,23 @@ class ParserPlugin(Star):
         link = searched.group(0)
         cfg.verbose(f"匹配到平台: {keyword}, 链接: {link}")
 
+        # 多链接并发控制：超过 max_concurrent_tasks 时进入等待队列
+        async with self._task_sem:
+            cfg.verbose(f"[Concurrency] 开始处理链接 | umo={umo} | link={link} | "
+                        f"current_tasks={self.cfg.max_concurrent_tasks - self._task_sem._value}")
+            await self._process_single_link(event, cfg, sender, keyword, searched, link, umo)
+
+    async def _process_single_link(
+        self,
+        event: AstrMessageEvent,
+        cfg: PluginConfig,
+        sender: MessageSender,
+        keyword: str,
+        searched: re.Match[str],
+        link: str,
+        umo: str,
+    ):
+        """处理单个链接的完整流程（仲裁、防抖、解析、发送）"""
         # 仲裁机制
         is_win = True
         if cfg.arbiter and isinstance(event, AiocqhttpMessageEvent) and not event.is_private_chat():
@@ -294,7 +314,7 @@ class ParserPlugin(Star):
                 cfg.verbose("[链接防抖] 策略为 silent，不发送任何反应")
                 return
             if strategy == "tip":
-                await self._send_debounce_tip(event, cfg, parser.platform.display_name, msg_id)
+                await self._send_debounce_tip(event, cfg, self.parser_map[keyword].platform.display_name, msg_id)
                 return
             # 默认 skip：保持原行为，仅日志警告后跳过解析
             logger.warning(f"[链接防抖] 链接 {link} 在防抖时间内，跳过解析")
@@ -307,7 +327,11 @@ class ParserPlugin(Star):
         await self._detect_action(event, cfg, parser.platform.display_name, msg_id)
 
         # 解析
-        parse_res = await parser.parse(keyword, searched)
+        try:
+            parse_res = await parser.parse(keyword, searched)
+        except Exception as e:
+            logger.warning(f"[Parser] 解析失败 | umo={umo} | link={link} | reason={e}")
+            return
 
         # 基于资源ID防抖
         resource_id = parse_res.get_resource_id()
@@ -334,18 +358,25 @@ class ParserPlugin(Star):
         # 发送解析结果（媒体/卡片等），同时传入缓存的解析提示与解析文本用于合并套娃
         parser_tip = getattr(event, "_parser_tip", None)
         merge_quote_id = msg_id if cfg.merge_quote_target == "original" else None
-        await sender.send_parse_result(
-            event,
-            parse_res,
-            parser_tip=parser_tip,
-            parse_text_segments=parse_text_segments,
-            merge_quote_id=merge_quote_id,
-            parse_text_already_sent=parse_text_already_sent,
-        )
+        try:
+            await sender.send_parse_result(
+                event,
+                parse_res,
+                parser_tip=parser_tip,
+                parse_text_segments=parse_text_segments,
+                merge_quote_id=merge_quote_id,
+                parse_text_already_sent=parse_text_already_sent,
+            )
+        except Exception as e:
+            logger.warning(f"[Sender] 发送解析结果失败 | umo={umo} | link={link} | reason={e}")
+            return
 
         # 解析完成后@用户 + 自定义文本（可选，不合并）
         if cfg.at_after_parse:
-            await self._send_after_parse_at(event, cfg, parse_res, sender)
+            try:
+                await self._send_after_parse_at(event, cfg, parse_res, sender)
+            except Exception as e:
+                logger.warning(f"[Sender] @用户消息发送失败 | umo={umo} | reason={e}")
 
         # 每次解析完成后主动检查内存，触发恢复
         try:

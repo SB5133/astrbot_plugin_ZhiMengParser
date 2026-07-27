@@ -588,6 +588,12 @@
         },
         "default": 10
     },
+    "range_memory_auto_disable": {
+        "description": "内存严重不足时自动关闭分块下载",
+        "hint": "开启后，当可用内存低于警告阈值时，分块下载将完全关闭并回退到单连接下载，优先保障系统稳定性。不依赖后台内存监控是否开启",
+        "type": "bool",
+        "default": true
+    },
     "enable_streaming_compress": {
         "description": "流式压缩",
         "hint": "开启视频压缩时生效。使用FFmpeg pipe边下载边压缩，总耗时约等于max(下载时间,压缩时间)。失败自动回退到传统压缩",
@@ -685,6 +691,95 @@
             "step": 1
         },
         "default": 2
+    },
+    "download_retry_wait_enabled": {
+        "description": "下载重试等待开关",
+        "hint": "开启后重试按配置的等待时间等待；关闭后失败立即重试不等待，适合追求极致速度的用户",
+        "type": "bool",
+        "default": true
+    },
+    "download_retry_delay_base": {
+        "description": "下载重试基础等待时间（秒）",
+        "hint": "超时、数据不完整等网络抖动错误使用此基础值进行指数退避",
+        "type": "float",
+        "slider": {
+            "min": 0.05,
+            "max": 2,
+            "step": 0.05
+        },
+        "default": 0.3
+    },
+    "download_retry_delay_limit": {
+        "description": "下载重试最大等待时间（秒）",
+        "hint": "重试等待时间的上限",
+        "type": "float",
+        "slider": {
+            "min": 0.1,
+            "max": 10,
+            "step": 0.1
+        },
+        "default": 1.2
+    },
+    "download_concurrency_limit": {
+        "description": "全局同时下载数上限",
+        "hint": "使用 asyncio.Semaphore 限制同时进行的下载任务数量",
+        "type": "int",
+        "slider": {
+            "min": 1,
+            "max": 20,
+            "step": 1
+        },
+        "default": 5
+    },
+    "download_delay_min": {
+        "description": "下载请求间最小延迟（秒）",
+        "hint": "每个请求完成后随机延迟的最小值，用于降低风控概率",
+        "type": "float",
+        "slider": {
+            "min": 0,
+            "max": 1,
+            "step": 0.05
+        },
+        "default": 0.1
+    },
+    "download_delay_max": {
+        "description": "下载请求间最大延迟（秒）",
+        "hint": "每个请求完成后随机延迟的最大值",
+        "type": "float",
+        "slider": {
+            "min": 0,
+            "max": 2,
+            "step": 0.05
+        },
+        "default": 0.3
+    },
+    "download_batch_size": {
+        "description": "小图片批量下载每批数量",
+        "hint": "同一 CDN 上多个小图片分批次下载，每批多少个，批次间延迟 0.2 秒",
+        "type": "int",
+        "slider": {
+            "min": 1,
+            "max": 30,
+            "step": 1
+        },
+        "default": 10
+    },
+    "download_dynamic_concurrency": {
+        "description": "动态调整下载并发数",
+        "hint": "根据最近下载成功率自动调整并发数：成功率>95%逐步增加（最高10），失败率>10%逐步减少（最低2）",
+        "type": "bool",
+        "default": false
+    },
+    "max_concurrent_tasks": {
+        "description": "同时处理链接的最大任务数",
+        "hint": "同一群聊连发多个链接或多个群同时发链接时，超过此数量的链接进入等待队列，有空闲时自动处理",
+        "type": "int",
+        "slider": {
+            "min": 1,
+            "max": 20,
+            "step": 1
+        },
+        "default": 5
     },
     "common_timeout": {
         "description": "普通请求超时时间",
@@ -935,6 +1030,86 @@
                         },
                         "default": null
                     },
+                    "download_concurrency_limit": {
+                        "description": "全局同时下载数上限",
+                        "type": "int",
+                        "slider": {
+                            "min": 1,
+                            "max": 20,
+                            "step": 1
+                        },
+                        "default": null
+                    },
+                    "download_delay_min": {
+                        "description": "下载请求间最小延迟（秒）",
+                        "type": "float",
+                        "slider": {
+                            "min": 0,
+                            "max": 1,
+                            "step": 0.05
+                        },
+                        "default": null
+                    },
+                    "download_delay_max": {
+                        "description": "下载请求间最大延迟（秒）",
+                        "type": "float",
+                        "slider": {
+                            "min": 0,
+                            "max": 2,
+                            "step": 0.05
+                        },
+                        "default": null
+                    },
+                    "download_batch_size": {
+                        "description": "小图片批量下载每批数量",
+                        "type": "int",
+                        "slider": {
+                            "min": 1,
+                            "max": 30,
+                            "step": 1
+                        },
+                        "default": null
+                    },
+                    "download_dynamic_concurrency": {
+                        "description": "动态调整下载并发数",
+                        "type": "bool",
+                        "default": null
+                    },
+                    "download_retry_wait_enabled": {
+                        "description": "下载重试等待开关",
+                        "type": "bool",
+                        "default": null
+                    },
+                    "download_retry_delay_base": {
+                        "description": "下载重试基础等待时间（秒）",
+                        "type": "float",
+                        "slider": {
+                            "min": 0.05,
+                            "max": 2,
+                            "step": 0.05
+                        },
+                        "default": null
+                    },
+                    "download_retry_delay_limit": {
+                        "description": "下载重试最大等待时间（秒）",
+                        "type": "float",
+                        "slider": {
+                            "min": 0.1,
+                            "max": 10,
+                            "step": 0.1
+                        },
+                        "default": null
+                    },
+                    "max_concurrent_tasks": {
+                        "description": "同时处理链接的最大任务数",
+                        "type": "int",
+                        "slider": {
+                            "min": 1,
+                            "max": 20,
+                            "step": 1
+                        },
+                        "default": null
+                    },
                     "dns_prefetch_enabled": {
                         "description": "DNS预解析",
                         "type": "bool",
@@ -1008,6 +1183,11 @@
                             "max": 30,
                             "step": 1
                         },
+                        "default": null
+                    },
+                    "range_memory_auto_disable": {
+                        "description": "内存严重不足时自动关闭分块下载",
+                        "type": "bool",
                         "default": null
                     },
                     "enable_streaming_compress": {

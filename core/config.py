@@ -227,6 +227,17 @@ class GroupOverride(ConfigNode):
     perf_download_recover_step: int | None
     perf_download_recover_interval: int | None
 
+    download_concurrency_limit: int | None
+    download_delay_min: float | None
+    download_delay_max: float | None
+    download_batch_size: int | None
+    download_dynamic_concurrency: bool | None
+    download_retry_wait_enabled: bool | None
+    download_retry_delay_base: float | None
+    download_retry_delay_limit: float | None
+
+    max_concurrent_tasks: int | None
+
     dns_prefetch_enabled: bool | None
     cdn_prefetch_enabled: bool | None
     enable_range_download: bool | None
@@ -238,6 +249,7 @@ class GroupOverride(ConfigNode):
     range_total_timeout: int | None
     range_memory_adaptive: bool | None
     range_memory_reserve_percent: int | None
+    range_memory_auto_disable: bool | None
     enable_streaming_compress: bool | None
     video_cache_enabled: bool | None
     video_cache_ttl: int | None
@@ -333,6 +345,17 @@ class PluginConfig(ConfigNode):
     download_retry_times: int
     common_timeout: int
 
+    download_concurrency_limit: int
+    download_delay_min: float
+    download_delay_max: float
+    download_batch_size: int
+    download_dynamic_concurrency: bool
+    download_retry_wait_enabled: bool
+    download_retry_delay_base: float
+    download_retry_delay_limit: float
+
+    max_concurrent_tasks: int
+
     perf_render_thread_pool: bool
     perf_render_cache_enabled: bool
     perf_render_cache_ttl: int
@@ -357,6 +380,7 @@ class PluginConfig(ConfigNode):
     range_total_timeout: int
     range_memory_adaptive: bool
     range_memory_reserve_percent: int
+    range_memory_auto_disable: bool
     enable_streaming_compress: bool
     video_cache_enabled: bool
     video_cache_ttl: int

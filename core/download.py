@@ -1,16 +1,17 @@
 import asyncio
+import random
 import time
 from asyncio import Task, TimeoutError, create_task, gather, sleep, to_thread
 from collections.abc import Callable, Coroutine
 from contextlib import asynccontextmanager
 from functools import wraps
 from pathlib import Path
+from typing import Any, AsyncGenerator, List, Optional, ParamSpec, TypeVar
 from urllib.parse import urlparse
-from typing import Any, AsyncGenerator, ParamSpec, TypeVar
 
 import aiofiles
 import yt_dlp
-from aiohttp import ClientError, ClientSession, ClientTimeout
+from aiohttp import ClientError, ClientSession, ClientTimeout, TCPConnector
 from msgspec import Struct, convert
 from tqdm.asyncio import tqdm
 
@@ -50,6 +51,10 @@ CDN_TEST_SIZE = 256 * 1024  # 256KB
 CDN_CACHE_TTL = 300  # 5分钟
 CDN_RETEST_RATIO = 0.5  # 实际速度低于测速50%时重新测速
 CDN_RETEST_AGE = 180  # 3分钟
+
+# 下载错误分类
+ERROR_NETWORK_JITTER = {"timeout", "connection_refused", "incomplete"}
+ERROR_RATE_LIMIT = {"rate_limit"}
 
 
 def auto_task(func: Callable[P, Coroutine[Any, Any, T]]) -> Callable[P, Task[T]]:
@@ -189,12 +194,23 @@ class Downloader:
         self.default_headers: dict[str, str] = COMMON_HEADER.copy()
         # 视频信息缓存
         self.info_cache: LimitedSizeDict[str, VideoInfo] = LimitedSizeDict()
-        # 用于流式下载的客户端
+
+        # 全局连接池：复用 TCP 连接，限制总连接数和单主机连接数
+        self._connector = TCPConnector(
+            limit=20,
+            limit_per_host=10,
+            ttl_dns_cache=300,
+            use_dns_cache=True,
+        )
         self.client = ClientSession(
-            timeout=ClientTimeout(total=self.cfg.download_timeout)
+            connector=self._connector,
+            timeout=ClientTimeout(total=self.cfg.download_timeout),
         )
         # 自适应并发管理器
         self.adaptive = AdaptiveSemaphoreManager(config)
+
+        # 全局下载信号量（控制同时下载数）
+        self._semaphore = asyncio.Semaphore(self.cfg.download_concurrency_limit)
 
         # 可选组件（由 main.py 注入）
         self.video_cache: VideoCacheManager | None = None
@@ -208,6 +224,12 @@ class Downloader:
         self._range_failures: dict[str, list[float]] = {}
         # 分块下载禁用至: platform -> timestamp
         self._range_disabled_until: dict[str, float] = {}
+
+        # 动态并发统计
+        self._dynamic_concurrency_enabled = bool(self.cfg.download_dynamic_concurrency)
+        self._current_concurrency = int(self.cfg.download_concurrency_limit)
+        self._download_results: list[bool] = []
+        self._dyn_lock = asyncio.Lock()
 
     def set_video_cache(self, cache: VideoCacheManager | None) -> None:
         self.video_cache = cache
@@ -240,15 +262,48 @@ class Downloader:
 
     @staticmethod
     def _classify_download_error(exc: Exception) -> str:
-        """将下载异常分类为连接被拒/超时/其他"""
+        """将下载异常分类为连接被拒/超时/不完整/限流/其他"""
         if isinstance(exc, TimeoutError):
             return "timeout"
         msg = str(exc).lower()
+        if "429" in msg or "rate limit" in msg or "too many requests" in msg:
+            return "rate_limit"
+        if "payload incomplete" in msg or "incomplete" in msg:
+            return "incomplete"
         if "connection refused" in msg or "cannot connect to host" in msg:
             return "connection_refused"
         if "timeout" in msg or "timed out" in msg:
             return "timeout"
         return "other"
+
+    def _get_headers(self, platform: str | None) -> dict[str, str]:
+        """根据平台返回对应的请求头（Referer / Origin）"""
+        headers: dict[str, str] = {}
+        if platform == "bilibili":
+            headers["Referer"] = "https://www.bilibili.com/"
+            headers["Origin"] = "https://www.bilibili.com"
+        elif platform == "douyin":
+            headers["Referer"] = "https://www.douyin.com/"
+            headers["Origin"] = "https://www.douyin.com"
+        elif platform == "kuaishou":
+            headers["Referer"] = "https://www.kuaishou.com/"
+            headers["Origin"] = "https://www.kuaishou.com"
+        elif platform == "xhs":
+            headers["Referer"] = "https://www.xiaohongshu.com/"
+            headers["Origin"] = "https://www.xiaohongshu.com"
+        elif platform == "weibo":
+            headers["Referer"] = "https://weibo.com/"
+            headers["Origin"] = "https://weibo.com"
+        elif platform == "twitter":
+            headers["Referer"] = "https://twitter.com/"
+            headers["Origin"] = "https://twitter.com"
+        elif platform == "youtube":
+            headers["Referer"] = "https://www.youtube.com/"
+            headers["Origin"] = "https://www.youtube.com"
+        elif platform == "instagram":
+            headers["Referer"] = "https://www.instagram.com/"
+            headers["Origin"] = "https://www.instagram.com"
+        return headers
 
     # ---------- 智能阈值与分块数 ----------
 
@@ -286,6 +341,11 @@ class Downloader:
             if platform in platform_overrides:
                 user_max = max(1, int(platform_overrides[platform]))
 
+        # 内存严重不足时完全关闭分块
+        if self.memory_monitor is not None and self.cfg.range_memory_auto_disable:
+            if self.memory_monitor.memory_pressure:
+                return 1
+
         if self.memory_monitor is not None:
             user_max = self.memory_monitor.get_current_max_parts(user_max)
 
@@ -321,6 +381,33 @@ class Downloader:
         if platform and platform in self._range_failures:
             del self._range_failures[platform]
 
+    # ---------- 动态并发调整 ----------
+
+    async def _record_download_result(self, success: bool) -> None:
+        """记录下载结果，根据成功率动态调整全局并发数"""
+        if not self._dynamic_concurrency_enabled:
+            return
+        async with self._dyn_lock:
+            self._download_results.append(success)
+            # 保留最近 50 次结果
+            if len(self._download_results) > 50:
+                self._download_results = self._download_results[-50:]
+            total = len(self._download_results)
+            if total < 10:
+                return
+            success_rate = sum(self._download_results) / total
+            old = self._current_concurrency
+            if success_rate > 0.95 and old < 10:
+                self._current_concurrency = min(10, old + 1)
+            elif success_rate < 0.90 and old > 2:
+                self._current_concurrency = max(2, old - 1)
+            if self._current_concurrency != old:
+                self._semaphore = asyncio.Semaphore(self._current_concurrency)
+                logger.info(
+                    f"[Download] 动态并发调整 | success_rate={success_rate:.1%} | "
+                    f"concurrency={old} -> {self._current_concurrency}"
+                )
+
     # ---------- 文件大小探测 ----------
 
     async def _get_file_size(
@@ -347,13 +434,13 @@ class Downloader:
 
     # ---------- CDN 优选 ----------
 
-    async def _cdn_speed_test_one(
+    async def _test_node_speed(
         self,
         url: str,
         headers: dict[str, str],
         proxy: str | None,
-    ) -> tuple[str, float] | None:
-        """对单个 URL 测速，下载 256KB，返回 (url, speed_bytes_per_sec)"""
+    ) -> float:
+        """对节点进行快速测速，返回速度 MB/s（0 表示失败或不可接受）"""
         start = time.time()
         downloaded = 0
         try:
@@ -362,25 +449,40 @@ class Downloader:
                 headers={**headers, "Range": f"bytes=0-{CDN_TEST_SIZE - 1}"},
                 allow_redirects=True,
                 proxy=proxy,
+                timeout=ClientTimeout(total=10),
             ) as response:
                 if response.status >= 400:
-                    return None
+                    return 0.0
                 async for chunk in response.content.iter_chunked(64 * 1024):
                     downloaded += len(chunk)
                     if downloaded >= CDN_TEST_SIZE:
                         break
             elapsed = time.time() - start
-            speed = downloaded / elapsed if elapsed > 0 else downloaded
+            speed_bps = downloaded / elapsed if elapsed > 0 else downloaded
+            speed_mbps = speed_bps / 1024 / 1024
             host = self._extract_host(url)
             self.cfg.verbose(
-                f"[CDN] 测速 | node={host} | speed={speed / 1024:.1f}KB/s"
+                f"[CDN] 测速 | node={host} | speed={speed_mbps:.2f}MB/s"
             )
-            return url, speed
+            return speed_mbps
         except Exception as e:
             self.cfg.verbose(
                 f"[CDN] 测速失败 | url={sanitize_url(url)} | reason={e}"
             )
+            return 0.0
+
+    async def _cdn_speed_test_one(
+        self,
+        url: str,
+        headers: dict[str, str],
+        proxy: str | None,
+    ) -> tuple[str, float] | None:
+        """对单个 URL 测速，下载 256KB，返回 (url, speed_bytes_per_sec)"""
+        speed_mbps = await self._test_node_speed(url, headers, proxy)
+        if speed_mbps <= 0:
             return None
+        speed_bps = speed_mbps * 1024 * 1024
+        return url, speed_bps
 
     async def _select_best_cdn(
         self,
@@ -560,99 +662,221 @@ class Downloader:
         self,
         url: str,
         file_path: Path,
-        headers: dict[str, str],
-        proxy: str | None,
-        platform: str | None,
+        platform: Optional[str] = None,
+        max_retries: int = 3,
+        timeout: int = 30,
+        cdn_fallback_urls: Optional[List[str]] = None,
+        proxy: Optional[str] = None,
+        headers: Optional[dict[str, str]] = None,
     ) -> Path:
-        """单连接流式下载"""
+        """单连接流式下载，支持重试、CDN 节点切换、限流检测"""
+        # 快手平台重试次数 +1
+        if platform == "kuaishou":
+            max_retries = max(max_retries, 4)
+
         start_time = time.time()
         start_ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(start_time))
-        host = self._extract_host(url)
         safe_url = sanitize_url(url)
+
+        # 合并请求头
+        final_headers = self.default_headers.copy()
+        final_headers.update(self._get_headers(platform))
+        if headers:
+            final_headers.update(headers)
+
+        # 构造候选节点列表
+        all_nodes: list[str] = [url]
+        if cdn_fallback_urls:
+            for u in cdn_fallback_urls:
+                if u and u not in all_nodes:
+                    all_nodes.append(u)
+
+        tried_nodes: list[str] = []
+        current_node_idx = 0
+        last_exc: Exception | None = None
+
+        host = self._extract_host(all_nodes[0])
         self.cfg.verbose(
             f"[Download] 开始下载 | file={file_path.name} | node={host} | start={start_ts} | url={safe_url}"
         )
 
-        async with self.adaptive.acquire(platform):
-            retries = self.cfg.download_retry_times
-            for attempt in range(retries + 1):
-                try:
-                    async with self.client.get(
-                        url, headers=headers, allow_redirects=True, proxy=proxy
-                    ) as response:
-                        host = self._extract_host(str(response.url))
-                        if attempt > 0:
-                            self.cfg.verbose(
-                                f"[Download] 节点切换 | file={file_path.name} | node={host} | "
-                                f"attempt={attempt + 1}/{retries + 1}"
-                            )
+        async with self._semaphore:
+            async with self.adaptive.acquire(platform):
+                while current_node_idx < len(all_nodes):
+                    current_url = all_nodes[current_node_idx]
+                    current_host = self._extract_host(current_url)
+                    tried_nodes.append(current_host)
 
-                        if response.status >= 400:
-                            raise ClientError(f"HTTP {response.status} {response.reason}")
-                        content_length = response.content_length
-                        max_bytes = self.max_size * 1024 * 1024
-
-                        if content_length == 0:
-                            logger.warning(f"媒体 url: {safe_url}, 大小为 0, 取消下载")
-                            raise ZeroSizeException
-                        if content_length and content_length > max_bytes:
-                            logger.warning(
-                                f"媒体 url: {safe_url} 大小 {content_length / 1024 / 1024:.2f} MB 超过 {self.max_size} MB, 取消下载"
-                            )
-                            raise SizeLimitException
-
-                        downloaded = 0
-                        with self.get_progress_bar(file_path.name, content_length) as bar:
-                            async with aiofiles.open(file_path, "wb") as file:
-                                async for chunk in response.content.iter_chunked(
-                                    1024 * 1024
-                                ):
-                                    downloaded += len(chunk)
-                                    if downloaded > max_bytes:
-                                        raise SizeLimitException
-                                    await file.write(chunk)
-                                    bar.update(len(chunk))
-
-                        if downloaded == 0:
-                            logger.warning(f"媒体 url: {safe_url}, 实际大小为 0, 取消下载")
-                            raise ZeroSizeException
-                        if content_length and downloaded < content_length:
-                            raise ClientError(
-                                f"HTTP payload incomplete {downloaded}/{content_length}"
-                            )
-
-                    elapsed = time.time() - start_time
-                    file_size = file_path.stat().st_size
-                    self.cfg.verbose(
-                        f"[Download] 下载成功 | file={file_path.name} | node={host} | "
-                        f"elapsed={elapsed:.2f}s | size={file_size / 1024 / 1024:.2f}MB"
-                    )
-                    await self.adaptive.report_success(platform)
-                    return file_path
-                except (ZeroSizeException, SizeLimitException):
-                    await safe_unlink(file_path)
-                    await self.adaptive.report_failure(platform)
-                    raise
-                except (ClientError, TimeoutError) as exc:
-                    await safe_unlink(file_path)
-                    error_type = self._classify_download_error(exc)
-                    if attempt < retries:
-                        wait = 1 + attempt
-                        self.cfg.verbose(
-                            f"[Download] 下载失败，准备重试 | file={file_path.name} | node={host} | "
-                            f"attempt={attempt + 1}/{retries + 1} | wait={wait}s | "
-                            f"error_type={error_type} | reason={exc}"
+                    # 节点快速测速（下载前）
+                    speed_mbps = await self._test_node_speed(current_url, final_headers, proxy)
+                    if 0 < speed_mbps < 0.5:
+                        logger.warning(
+                            f"Download 节点 {current_host} 限流，切换至下一个 CDN（速度：{speed_mbps:.1f}MB/s）"
                         )
-                        await sleep(wait)
+                        current_node_idx += 1
                         continue
-                    await self.adaptive.report_failure(platform)
-                    self.cfg.verbose(
-                        f"[Download] 下载最终失败 | file={file_path.name} | node={host} | "
-                        f"error_type={error_type} | reason={exc}"
-                    )
-                    logger.exception(f"下载失败 | url: {safe_url}, file_path: {file_path}")
-                    raise DownloadException("媒体下载失败") from exc
-        raise DownloadException("媒体下载失败")
+
+                    for attempt in range(max_retries + 1):
+                        try:
+                            async with self.client.get(
+                                current_url,
+                                headers=final_headers,
+                                allow_redirects=True,
+                                proxy=proxy,
+                                timeout=ClientTimeout(total=timeout),
+                            ) as response:
+                                current_host = self._extract_host(str(response.url))
+
+                                # 403/429 立即切换节点
+                                if response.status in (403, 429):
+                                    logger.warning(
+                                        f"Download 节点 {current_host} 返回 {response.status}，切换至下一个 CDN"
+                                    )
+                                    break  # 跳出当前节点重试，切换下一个节点
+
+                                if response.status >= 400:
+                                    raise ClientError(f"HTTP {response.status} {response.reason}")
+
+                                content_length = response.content_length
+                                max_bytes = self.max_size * 1024 * 1024
+
+                                if content_length == 0:
+                                    logger.warning(f"媒体 url: {sanitize_url(current_url)}, 大小为 0, 取消下载")
+                                    raise ZeroSizeException
+                                if content_length and content_length > max_bytes:
+                                    logger.warning(
+                                        f"媒体 url: {sanitize_url(current_url)} 大小 {content_length / 1024 / 1024:.2f} MB 超过 {self.max_size} MB, 取消下载"
+                                    )
+                                    raise SizeLimitException
+
+                                downloaded = 0
+                                with self.get_progress_bar(file_path.name, content_length) as bar:
+                                    async with aiofiles.open(file_path, "wb") as file:
+                                        async for chunk in response.content.iter_chunked(1024 * 1024):
+                                            downloaded += len(chunk)
+                                            if downloaded > max_bytes:
+                                                raise SizeLimitException
+                                            await file.write(chunk)
+                                            bar.update(len(chunk))
+
+                                if downloaded == 0:
+                                    logger.warning(f"媒体 url: {sanitize_url(current_url)}, 实际大小为 0, 取消下载")
+                                    raise ZeroSizeException
+                                if content_length and downloaded < content_length:
+                                    raise ClientError(
+                                        f"HTTP payload incomplete {downloaded}/{content_length}"
+                                    )
+
+                            elapsed = time.time() - start_time
+                            file_size = file_path.stat().st_size
+                            retry_count = len(tried_nodes) - 1 + attempt
+                            logger.info(
+                                f"Download 下载成功 重试 {retry_count} 次后 file={file_path.name} "
+                                f"node={current_host} size={file_size / 1024 / 1024:.2f}MB"
+                            )
+                            await self.adaptive.report_success(platform)
+                            await self._record_download_result(True)
+                            return file_path
+
+                        except (ZeroSizeException, SizeLimitException):
+                            await safe_unlink(file_path)
+                            await self.adaptive.report_failure(platform)
+                            await self._record_download_result(False)
+                            raise
+
+                        except (ClientError, TimeoutError) as exc:
+                            await safe_unlink(file_path)
+                            last_exc = exc
+                            error_type = self._classify_download_error(exc)
+
+                            # 限流错误直接切换节点，不等待重试
+                            if error_type in ERROR_RATE_LIMIT or (isinstance(exc, ClientError) and "429" in str(exc)):
+                                logger.warning(
+                                    f"Download 节点 {current_host} 限流，切换至下一个 CDN"
+                                )
+                                break
+
+                            if attempt < max_retries:
+                                # 计算等待时间
+                                if not self.cfg.download_retry_wait_enabled:
+                                    self.cfg.verbose(
+                                        f"Download 下载失败，立即重试（等待已关闭）file={file_path.name}"
+                                    )
+                                    wait = 0.0
+                                else:
+                                    if error_type in ERROR_NETWORK_JITTER:
+                                        base = self.cfg.download_retry_delay_base
+                                    else:
+                                        base = 0.5
+                                    wait = min(base * (2 ** attempt), self.cfg.download_retry_delay_limit)
+                                    logger.warning(
+                                        f"Download 下载失败，等待 {wait:.1f}s 后重试 第 {attempt + 1} 次 "
+                                        f"file={file_path.name} node={current_host} error={exc}"
+                                    )
+                                if wait > 0:
+                                    await sleep(wait)
+                                continue
+
+                            # 当前节点最终失败
+                            logger.warning(
+                                f"Download 节点 {current_host} 失败，切换至下一个 CDN"
+                            )
+                            break
+
+                    current_node_idx += 1
+
+        # 所有节点都失败
+        await self._record_download_result(False)
+        await self.adaptive.report_failure(platform)
+        nodes_str = ",".join(tried_nodes)
+        err_msg = f"Download 下载最终失败 file={file_path.name} nodes={nodes_str} error={last_exc}"
+        logger.error(err_msg)
+        logger.exception(f"下载失败 | url: {safe_url}, file_path: {file_path}")
+        raise DownloadException("媒体下载失败") from last_exc
+
+    # ---------- 批量下载 ----------
+
+    async def download_batch(
+        self,
+        urls: list[str],
+        *,
+        headers: dict[str, str] | None = None,
+        proxy: str | None = None,
+        platform: str | None = None,
+    ) -> list[Path]:
+        """分批次下载同一 CDN 上的多个小图片，批次间有延迟"""
+        if not urls:
+            return []
+
+        results: list[Path] = []
+        batch_size = max(1, int(self.cfg.download_batch_size))
+        for i in range(0, len(urls), batch_size):
+            batch = urls[i : i + batch_size]
+            tasks = [
+                self.download_img(
+                    url,
+                    headers=headers,
+                    proxy=proxy,
+                    platform=platform,
+                )
+                for url in batch
+            ]
+            batch_results = await gather(*tasks, return_exceptions=True)
+            for res in batch_results:
+                if isinstance(res, Path):
+                    results.append(res)
+            if i + batch_size < len(urls):
+                await sleep(0.2)
+        return results
+
+    # ---------- 请求间随机延迟 ----------
+
+    async def _post_request_delay(self) -> None:
+        """每个请求完成后随机延迟"""
+        lo = max(0, float(self.cfg.download_delay_min))
+        hi = max(lo, float(self.cfg.download_delay_max))
+        if hi > 0:
+            await sleep(random.uniform(lo, hi))
 
     # ---------- 统一优化下载入口 ----------
 
@@ -666,16 +890,19 @@ class Downloader:
         candidates: list[str] | None = None,
     ) -> Path:
         """智能选择 CDN 优选 / 分块下载 / 单连接下载"""
-        headers = headers or self.default_headers
+        final_headers = self.default_headers.copy()
+        final_headers.update(self._get_headers(platform))
+        if headers:
+            final_headers.update(headers)
 
         # 1. CDN 优选（需要多个候选 URL）
         urls = [url] + (candidates or [])
         urls = [u for u in urls if u]
         if self.cfg.cdn_prefetch_enabled and len(urls) > 1:
-            url, _ = await self._select_best_cdn(urls, headers, proxy)
+            url, _ = await self._select_best_cdn(urls, final_headers, proxy)
 
         # 2. 探测文件大小
-        total_size = await self._get_file_size(url, headers, proxy)
+        total_size = await self._get_file_size(url, final_headers, proxy)
         threshold = self._smart_threshold(total_size)
 
         # 3. 小文件直接单连接
@@ -683,7 +910,9 @@ class Downloader:
             self.cfg.verbose(
                 f"[Download] 文件小于10MB，跳过所有优化 | file={file_path.name}"
             )
-            return await self._download_single(url, file_path, headers, proxy, platform)
+            return await self._download_single(
+                url, file_path, platform=platform, cdn_fallback_urls=candidates, proxy=proxy, headers=headers
+            )
 
         # 4. 尝试分块下载（压缩开启时用户开关无效，因为压缩关闭才生效）
         if (
@@ -692,11 +921,16 @@ class Downloader:
             and total_size
             and threshold["range"]
         ):
-            if await self._download_range(url, file_path, total_size, headers, proxy, platform):
+            if await self._download_range(url, file_path, total_size, final_headers, proxy, platform):
+                await self._post_request_delay()
                 return file_path
             logger.warning("[Download] 分块下载失败，回退到单连接下载")
 
-        return await self._download_single(url, file_path, headers, proxy, platform)
+        result = await self._download_single(
+            url, file_path, platform=platform, cdn_fallback_urls=candidates, proxy=proxy, headers=headers
+        )
+        await self._post_request_delay()
+        return result
 
     # ---------- 压缩相关 ----------
 
@@ -1086,7 +1320,14 @@ class Downloader:
         v_path, a_path = await gather(
             self.download_video(v_url, headers=headers, proxy=proxy, platform=platform),
             self.download_audio(a_url, headers=headers, proxy=proxy, platform=platform),
+            return_exceptions=True,
         )
+        # 失败隔离：任一失败则抛出
+        if isinstance(v_path, Exception):
+            raise DownloadException("视频下载失败") from v_path
+        if isinstance(a_path, Exception):
+            raise DownloadException("音频下载失败") from a_path
+
         await self._merge_av_adaptive(v_path=v_path, a_path=a_path, output_path=output_path)
 
         size = output_path.stat().st_size if output_path.exists() else None
@@ -1255,32 +1496,37 @@ class Downloader:
         if node:
             opts["js_runtimes"] = {"node": {}}
 
-        async with self.adaptive.acquire(platform):
-            start_time = time.time()
-            start_ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(start_time))
-            host = self._extract_host(url)
-            safe_url = sanitize_url(url)
-            self.cfg.verbose(
-                f"[Download] 开始 yt-dlp 下载 | file={video_path.name} | node={host} | start={start_ts} | url={safe_url}"
-            )
-            try:
-                with yt_dlp.YoutubeDL(opts) as ydl:  # type: ignore
-                    await to_thread(ydl.download, [url])
-                elapsed = time.time() - start_time
-                file_size = video_path.stat().st_size if video_path.exists() else 0
+        async with self._semaphore:
+            async with self.adaptive.acquire(platform):
+                start_time = time.time()
+                start_ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(start_time))
+                host = self._extract_host(url)
+                safe_url = sanitize_url(url)
                 self.cfg.verbose(
-                    f"[Download] yt-dlp 下载成功 | file={video_path.name} | node={host} | "
-                    f"elapsed={elapsed:.2f}s | size={file_size / 1024 / 1024:.2f}MB"
+                    f"[Download] 开始 yt-dlp 下载 | file={video_path.name} | node={host} | start={start_ts} | url={safe_url}"
                 )
-                await self.adaptive.report_success(platform)
-            except Exception as exc:
-                await self.adaptive.report_failure(platform)
-                error_type = self._classify_download_error(exc)
-                self.cfg.verbose(
-                    f"[Download] yt-dlp 下载失败 | file={video_path.name} | node={host} | "
-                    f"error_type={error_type} | reason={exc}"
-                )
-                raise
+                try:
+                    with yt_dlp.YoutubeDL(opts) as ydl:  # type: ignore
+                        await to_thread(ydl.download, [url])
+                    elapsed = time.time() - start_time
+                    file_size = video_path.stat().st_size if video_path.exists() else 0
+                    self.cfg.verbose(
+                        f"[Download] yt-dlp 下载成功 | file={video_path.name} | node={host} | "
+                        f"elapsed={elapsed:.2f}s | size={file_size / 1024 / 1024:.2f}MB"
+                    )
+                    await self.adaptive.report_success(platform)
+                    await self._record_download_result(True)
+                except Exception as exc:
+                    await self.adaptive.report_failure(platform)
+                    await self._record_download_result(False)
+                    error_type = self._classify_download_error(exc)
+                    self.cfg.verbose(
+                        f"[Download] yt-dlp 下载失败 | file={video_path.name} | node={host} | "
+                        f"error_type={error_type} | reason={exc}"
+                    )
+                    raise
+
+        await self._post_request_delay()
 
         # 压缩与缓存
         size = video_path.stat().st_size if video_path.exists() else None
@@ -1337,47 +1583,54 @@ class Downloader:
         if node:
             opts["js_runtimes"] = {"node": {}}
 
-        async with self.adaptive.acquire(platform):
-            start_time = time.time()
-            start_ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(start_time))
-            host = self._extract_host(url)
-            safe_url = sanitize_url(url)
-            self.cfg.verbose(
-                f"[Download] 开始 yt-dlp 宽松下载 | file={video_path.name} | node={host} | start={start_ts} | url={safe_url}"
-            )
-            try:
-                with yt_dlp.YoutubeDL(opts) as ydl:  # type: ignore
-                    await to_thread(ydl.download, [url])
-                if video_path.exists():
-                    elapsed = time.time() - start_time
-                    file_size = video_path.stat().st_size
-                    self.cfg.verbose(
-                        f"[Download] yt-dlp 宽松下载成功 | file={video_path.name} | node={host} | "
-                        f"elapsed={elapsed:.2f}s | size={file_size / 1024 / 1024:.2f}MB"
-                    )
-                    await self.adaptive.report_success(platform)
-                else:
-                    candidates = sorted(self.cfg.cache_dir.glob(f"{file_stem}*.mp4"))
-                    if candidates:
-                        video_path = candidates[0]
+        async with self._semaphore:
+            async with self.adaptive.acquire(platform):
+                start_time = time.time()
+                start_ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(start_time))
+                host = self._extract_host(url)
+                safe_url = sanitize_url(url)
+                self.cfg.verbose(
+                    f"[Download] 开始 yt-dlp 宽松下载 | file={video_path.name} | node={host} | start={start_ts} | url={safe_url}"
+                )
+                try:
+                    with yt_dlp.YoutubeDL(opts) as ydl:  # type: ignore
+                        await to_thread(ydl.download, [url])
+                    if video_path.exists():
                         elapsed = time.time() - start_time
                         file_size = video_path.stat().st_size
                         self.cfg.verbose(
-                            f"[Download] yt-dlp 宽松下载成功（候选文件） | file={video_path.name} | node={host} | "
+                            f"[Download] yt-dlp 宽松下载成功 | file={video_path.name} | node={host} | "
                             f"elapsed={elapsed:.2f}s | size={file_size / 1024 / 1024:.2f}MB"
                         )
                         await self.adaptive.report_success(platform)
+                        await self._record_download_result(True)
                     else:
-                        await self.adaptive.report_failure(platform)
-                        raise DownloadException("yt-dlp 视频下载失败")
-            except Exception as exc:
-                await self.adaptive.report_failure(platform)
-                error_type = self._classify_download_error(exc)
-                self.cfg.verbose(
-                    f"[Download] yt-dlp 宽松下载失败 | file={video_path.name} | node={host} | "
-                    f"error_type={error_type} | reason={exc}"
-                )
-                raise
+                        candidates = sorted(self.cfg.cache_dir.glob(f"{file_stem}*.mp4"))
+                        if candidates:
+                            video_path = candidates[0]
+                            elapsed = time.time() - start_time
+                            file_size = video_path.stat().st_size
+                            self.cfg.verbose(
+                                f"[Download] yt-dlp 宽松下载成功（候选文件） | file={video_path.name} | node={host} | "
+                                f"elapsed={elapsed:.2f}s | size={file_size / 1024 / 1024:.2f}MB"
+                            )
+                            await self.adaptive.report_success(platform)
+                            await self._record_download_result(True)
+                        else:
+                            await self.adaptive.report_failure(platform)
+                            await self._record_download_result(False)
+                            raise DownloadException("yt-dlp 视频下载失败")
+                except Exception as exc:
+                    await self.adaptive.report_failure(platform)
+                    await self._record_download_result(False)
+                    error_type = self._classify_download_error(exc)
+                    self.cfg.verbose(
+                        f"[Download] yt-dlp 宽松下载失败 | file={video_path.name} | node={host} | "
+                        f"error_type={error_type} | reason={exc}"
+                    )
+                    raise
+
+        await self._post_request_delay()
 
         size = video_path.stat().st_size if video_path.exists() else None
         final_path = video_path
@@ -1424,33 +1677,36 @@ class Downloader:
         if cookiefile and cookiefile.is_file():
             opts["cookiefile"] = str(cookiefile)
 
-        async with self.adaptive.acquire(platform):
-            start_time = time.time()
-            start_ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(start_time))
-            host = self._extract_host(url)
-            safe_url = sanitize_url(url)
-            self.cfg.verbose(
-                f"[Download] 开始 yt-dlp 音频下载 | file={audio_path.name} | node={host} | start={start_ts} | url={safe_url}"
-            )
-            try:
-                with yt_dlp.YoutubeDL(opts) as ydl:  # type: ignore
-                    await to_thread(ydl.download, [url])
-                elapsed = time.time() - start_time
-                file_size = audio_path.stat().st_size if audio_path.exists() else 0
+        async with self._semaphore:
+            async with self.adaptive.acquire(platform):
+                start_time = time.time()
+                start_ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(start_time))
+                host = self._extract_host(url)
+                safe_url = sanitize_url(url)
                 self.cfg.verbose(
-                    f"[Download] yt-dlp 音频下载成功 | file={audio_path.name} | node={host} | "
-                    f"elapsed={elapsed:.2f}s | size={file_size / 1024 / 1024:.2f}MB"
+                    f"[Download] 开始 yt-dlp 音频下载 | file={audio_path.name} | node={host} | start={start_ts} | url={safe_url}"
                 )
-                await self.adaptive.report_success(platform)
-                return audio_path
-            except Exception as exc:
-                await self.adaptive.report_failure(platform)
-                error_type = self._classify_download_error(exc)
-                self.cfg.verbose(
-                    f"[Download] yt-dlp 音频下载失败 | file={audio_path.name} | node={host} | "
-                    f"error_type={error_type} | reason={exc}"
-                )
-                raise
+                try:
+                    with yt_dlp.YoutubeDL(opts) as ydl:  # type: ignore
+                        await to_thread(ydl.download, [url])
+                    elapsed = time.time() - start_time
+                    file_size = audio_path.stat().st_size if audio_path.exists() else 0
+                    self.cfg.verbose(
+                        f"[Download] yt-dlp 音频下载成功 | file={audio_path.name} | node={host} | "
+                        f"elapsed={elapsed:.2f}s | size={file_size / 1024 / 1024:.2f}MB"
+                    )
+                    await self.adaptive.report_success(platform)
+                    await self._record_download_result(True)
+                    return audio_path
+                except Exception as exc:
+                    await self.adaptive.report_failure(platform)
+                    await self._record_download_result(False)
+                    error_type = self._classify_download_error(exc)
+                    self.cfg.verbose(
+                        f"[Download] yt-dlp 音频下载失败 | file={audio_path.name} | node={host} | "
+                        f"error_type={error_type} | reason={exc}"
+                    )
+                    raise
 
     @staticmethod
     def get_progress_bar(desc: str, total: int | None = None) -> tqdm:

@@ -35,6 +35,15 @@ class MemoryMonitor:
         return bool(getattr(node, "enabled", False))
 
     @property
+    def memory_pressure(self) -> bool:
+        """当前是否处于内存压力状态（可用内存低于警告阈值）"""
+        return self._memory_pressure
+
+    @property
+    def range_memory_auto_disable(self) -> bool:
+        return bool(getattr(self.cfg, "range_memory_auto_disable", True))
+
+    @property
     def interval(self) -> int:
         node = getattr(self.cfg, "memory_monitor", None)
         if node is None:
@@ -98,10 +107,17 @@ class MemoryMonitor:
                     f"可用={available / 1024 / 1024:.1f}MB | 可用率={ratio * 100:.1f}% | "
                     f"已触发分块数降级"
                 )
+                if self.range_memory_auto_disable:
+                    logger.warning(
+                        f"[MemoryMonitor] 可用内存低于 {self.warning_threshold * 100:.0f}%，"
+                        f"分块下载已完全关闭（自动保护）"
+                    )
         else:
             self._memory_pressure = False
             if was_pressure:
                 logger.info("[MemoryMonitor] 内存恢复充足，分块数上限已恢复")
+                if self.range_memory_auto_disable:
+                    logger.info("[MemoryMonitor] 内存已恢复，分块下载已重新开启")
 
     async def check_now(self) -> None:
         """立即执行一次内存检测（用于解析完成后主动恢复）"""
