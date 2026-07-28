@@ -1182,7 +1182,12 @@ class Downloader:
         input_path: Path,
         output_path: Path,
     ) -> Path:
-        """传统文件到文件压缩（作为流式压缩失败回退）"""
+        """传统文件到文件压缩（作为流式压缩失败回退）
+
+        命令显式声明 ``-f mp4``，强制 FFmpeg 将输出封装为 mp4 容器，
+        避免因输出扩展名与探测到的 muxer 不一致而抛
+        ``Unable to find a suitable output format``。
+        """
         params = self._resolve_compress_params()
         encoder = params["encoder"]
         quality_param = params["quality_param"]
@@ -1213,6 +1218,10 @@ class Downloader:
             "aac",
             "-b:a",
             params["audio_bitrate"],
+            "-f",
+            "mp4",
+            "-movflags",
+            "+faststart",
             str(output_path),
         ])
 
@@ -1222,20 +1231,45 @@ class Downloader:
         return output_path
 
     async def _compress_video(self, input_path: Path) -> Path:
-        """压缩视频，先尝试流式压缩（如启用），失败回退传统压缩"""
-        output_path = input_path.with_name(f"{input_path.stem}_compressed{input_path.suffix}")
+        """压缩视频，先尝试流式压缩（如启用），失败回退传统压缩
+
+        输出文件统一使用 ``.mp4`` 扩展名，配合 ffmpeg 命令中的 ``-f mp4``
+        显式声明容器，避免某些场景下 FFmpeg 报
+        ``Unable to find a suitable output format``。
+        """
+        output_path = input_path.with_name(f"{input_path.stem}_compressed.mp4")
         if output_path.exists():
             return output_path
 
+        import time as _t
+
+        # 当前实现：流式压缩与回退都走同一个文件到文件的命令。
+        # 保留 enable_streaming_compress 开关以兼容未来真正的流式压缩实现。
         if not self.cfg.enable_streaming_compress:
             return await self._stream_compress(input_path, output_path)
 
+        start = _t.time()
+        params = self._resolve_compress_params()
+        encoder = params.get("encoder", "libx264")
         try:
-            return await self._stream_compress(input_path, output_path)
+            result = await self._stream_compress(input_path, output_path)
+            elapsed = _t.time() - start
+            logger.info(
+                f"[VideoCompress] 流式压缩成功: {output_path.name}, 编码{encoder}, "
+                f"耗时{elapsed:.2f}s"
+            )
+            return result
         except Exception as e:
             logger.warning(f"[VideoCompress] 流式压缩失败，回退传统压缩: {e}")
             await safe_unlink(output_path)
-            return await self._stream_compress(input_path, output_path)
+            start = _t.time()
+            result = await self._stream_compress(input_path, output_path)
+            elapsed = _t.time() - start
+            logger.info(
+                f"[VideoCompress] 传统压缩成功: {output_path.name}, 编码{encoder}, "
+                f"耗时{elapsed:.2f}s"
+            )
+            return result
 
     # ---------- 视频缓存 ----------
 

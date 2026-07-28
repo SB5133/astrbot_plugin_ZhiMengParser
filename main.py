@@ -298,6 +298,8 @@ class ParserPlugin(Star):
             "download_size": 0,
             "video_download_seconds": 0.0,
             "render_ok": False,
+            "parse_elapsed": 0.0,
+            "render_elapsed": 0.0,
         }
 
         # 仲裁机制
@@ -348,9 +350,11 @@ class ParserPlugin(Star):
         await self._detect_action(event, cfg, parser.platform.display_name, msg_id)
 
         # 解析
+        parse_start = _time.time()
         try:
             parse_res = await parser.parse(keyword, searched)
             stats["parse_ok"] = True
+            stats["parse_elapsed"] = _time.time() - parse_start
         except Exception as e:
             logger.warning(f"[Parser] 解析失败 | umo={umo} | link={link} | reason={e}")
             self._log_task_summary(stats, task_start)
@@ -409,6 +413,7 @@ class ParserPlugin(Star):
         try:
             render_stats = getattr(sender, "last_render_stats", None) or {}
             stats["render_ok"] = bool(render_stats.get("ok"))
+            stats["render_elapsed"] = float(render_stats.get("elapsed", 0.0) or 0.0)
             dl_stats = getattr(sender, "last_download_stats", None) or {}
             if dl_stats:
                 stats["download_ok"] = bool(dl_stats.get("ok"))
@@ -445,16 +450,22 @@ class ParserPlugin(Star):
 
         total_elapsed = _time.time() - task_start
         parse_ok = "解析成功" if stats.get("parse_ok") else "解析失败"
+        parse_elapsed = float(stats.get("parse_elapsed", 0.0) or 0.0)
         if stats.get("download_ok"):
             size_mb = stats.get("download_size", 0) / 1024 / 1024
             download_part = f"下载成功 ({size_mb:.2f}MB)"
         else:
             download_part = "下载未执行"
-        render_part = "渲染卡片成功" if stats.get("render_ok") else "渲染卡片未执行"
+        render_elapsed = float(stats.get("render_elapsed", 0.0) or 0.0)
+        if stats.get("render_ok"):
+            render_part = f"渲染卡片成功  耗时{render_elapsed:.2f}s"
+        else:
+            render_part = "渲染卡片未执行"
         video_seconds = stats.get("video_download_seconds", 0.0)
         logger.info(
-            f"[Task] 汇总: {parse_ok} | {download_part} | {render_part} | "
-            f"下载视频时间 {video_seconds:.2f}s  |  总耗时 {total_elapsed:.2f}s"
+            f"[Task] 汇总: {parse_ok} 耗时{parse_elapsed:.2f}s | {download_part} | "
+            f"{render_part} | 下载视频时间 {video_seconds:.2f}s | "
+            f"总耗时 {total_elapsed:.2f}s"
         )
 
     @staticmethod

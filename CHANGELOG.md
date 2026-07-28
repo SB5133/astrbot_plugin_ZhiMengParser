@@ -1,5 +1,25 @@
 # 更新日志
 
+## v1.6.3
+
+### 新增
+
+- **视频发送快速优化**（`core/sender.py`）
+  - 发送前通过 `ffprobe` 探测视频格式（容器、视频/音频编码、faststart），按四档分类处理：
+    - A 直发：`mp4 + h264 + aac + faststart` → 跳过 ffmpeg 直接发送
+    - B 快速转封装：`h264 + aac` 但容器或 faststart 不符合 → `ffmpeg -c copy -movflags +faststart` 0.2-0.5s 即可完成
+    - C 转码：明确检测到 `hevc / av1 / vp9` → 转码为 `h264`，复用 `compress.py` 中的硬件检测推荐编码器（`h264_nvenc` / `h264_qsv` / `h264_amf`），不可用时回退 `libx264`
+    - D 回退：未知编码、`ffprobe` 不可用、字段缺失 → 回退到原有 `_maybe_compress`，避免误判触发转码
+  - 封面图直接复用 `VideoContent.cover`（解析阶段已下载的文件），不再用 ffmpeg 从视频中重新抽帧
+  - 转封装 / 转码产生的临时文件（`*_remux.mp4`、`*_transcode.mp4`）在 `send_parse_result` 完成后统一通过 `safe_unlink` 清理
+  - 新增配置开关 `video_send_fast_optimization`（默认 true），关闭后完全回退原有逻辑
+
+### 备注
+
+- 所有 `ffmpeg` / `ffprobe` 调用均使用 `asyncio.create_subprocess_exec` 异步执行，不阻塞事件循环
+- 转码参数沿用 `compress.py` 的 `QUALITY_PRESETS` 映射，与现有视频压缩体验一致
+- 转码/转封装完成后会校验输出文件大小，异常时自动回退到 `_maybe_compress`
+
 ## v1.6.2
 
 ### 新增

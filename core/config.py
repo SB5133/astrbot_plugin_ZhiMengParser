@@ -270,6 +270,7 @@ class GroupOverride(ConfigNode):
     card_placeholder_image: str | None
 
     range_download_resume_enabled: bool | None
+    video_send_fast_optimization: bool | None
 
 
 class EffectiveConfig:
@@ -318,6 +319,7 @@ class PluginConfig(ConfigNode):
     video_compress_enable: bool
     video_compress_quality_mode: str
     video_compress_encoder: str
+    video_send_fast_optimization: bool
     video_compress_custom_preset: str
     video_compress_custom_resolution: str
     video_compress_custom_audio_bitrate: str

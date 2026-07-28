@@ -120,6 +120,12 @@
         ],
         "default": "auto"
     },
+    "video_send_fast_optimization": {
+        "description": "视频发送快速优化",
+        "hint": "发送前检测视频格式：mp4+h264+aac+faststart 直接发送不调用 ffmpeg；h264+aac 但容器或 faststart 不符时只做快速转封装（不重新编码）；明确检测到 H.265/AV1/VP9 时才转码为 H.264；其它情况回退到原有处理。关闭后完全使用原有逻辑。",
+        "type": "bool",
+        "default": true
+    },
     "video_compress_custom_preset": {
         "description": "自定义编码速度预设",
         "hint": "自定义模式下生效。不同编码器会映射到对应预设值",

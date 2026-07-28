@@ -1,5 +1,7 @@
 import asyncio
+import json
 import random
+import shutil
 import string
 from itertools import chain
 from pathlib import Path
@@ -19,6 +21,7 @@ from astrbot.core.message.components import (
 )
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
 
+from .compress import QUALITY_PRESETS
 from .config import PluginConfig
 from .data import (
     AudioContent,
@@ -38,6 +41,7 @@ from .exception import (
     ZeroSizeException,
 )
 from .render import Renderer
+from .utils import safe_unlink
 
 
 class MessageSender:
@@ -60,6 +64,10 @@ class MessageSender:
         self.renderer = renderer
         self.last_download_stats: dict[str, Any] = {}
         self.last_render_stats: dict[str, Any] = {}
+        # 本次任务产生的临时视频文件，发送完成后统一清理
+        self._temp_video_paths: list[Path] = []
+        # 渲染累计耗时（由 render_card 调用点累加）
+        self._render_elapsed: float = 0.0
 
     @staticmethod
     def _clamp_range(lo: int | None, hi: int | None) -> tuple[float, float]:
@@ -162,6 +170,236 @@ class MessageSender:
             logger.error(f"[MessageSender] 视频压缩失败，使用原文件: {e}")
             return path
 
+    # ------------------------------------------------------------------
+    # 视频发送优化：探测 → 分类（直发/转封装/转码/回退）
+    # ------------------------------------------------------------------
+
+    async def _probe_video_format(self, path: Path) -> dict[str, Any] | None:
+        """使用 ffprobe 探测视频格式，失败返回 None"""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_format",
+                "-show_streams",
+                "-print_format",
+                "json",
+                str(path),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _ = await proc.communicate()
+            if proc.returncode != 0:
+                return None
+            return json.loads(stdout.decode("utf-8", errors="replace"))
+        except FileNotFoundError:
+            return None
+        except Exception:
+            return None
+
+    @staticmethod
+    def _has_faststart(path: Path) -> bool:
+        """通过读取文件头判断 mp4 是否已 faststart（moov 原子在 mdat 之前）"""
+        try:
+            with open(path, "rb") as f:
+                head = f.read(2 * 1024 * 1024)  # 取前 2MB
+            idx_moov = head.find(b"moov")
+            idx_mdat = head.find(b"mdat")
+            if idx_moov < 0:
+                return False
+            if idx_mdat < 0 or idx_moov < idx_mdat:
+                return True
+            return False
+        except Exception:
+            return False
+
+    def _select_video_encoder(self) -> str:
+        """根据硬件检测选择 h264 编码器；硬件不可用时回退 libx264"""
+        compressor = getattr(self.cfg, "compressor", None)
+        if compressor is not None:
+            try:
+                enc = compressor.hw.recommended_encoder
+                if enc and enc != "mediacodec":
+                    return enc
+            except Exception:
+                pass
+        return "libx264"
+
+    def _track_temp(self, path: Path) -> Path:
+        """记录临时视频文件，发送完成后清理"""
+        try:
+            self._temp_video_paths.append(path)
+        except Exception:
+            pass
+        return path
+
+    async def _cleanup_temp_videos(self) -> None:
+        """清理本次任务产生的临时视频文件"""
+        if not self._temp_video_paths:
+            return
+        paths = list(self._temp_video_paths)
+        self._temp_video_paths.clear()
+        await asyncio.gather(*(safe_unlink(p) for p in paths), return_exceptions=True)
+
+    async def _fast_remux(self, input_path: Path) -> Path | None:
+        """快速转封装到 mp4 + faststart，不重新编码"""
+        output = input_path.with_name(f"{input_path.stem}_remux.mp4")
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "ffmpeg",
+                "-y",
+                "-i",
+                str(input_path),
+                "-c",
+                "copy",
+                "-movflags",
+                "+faststart",
+                str(output),
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await proc.communicate()
+            if proc.returncode != 0 or not output.exists() or output.stat().st_size == 0:
+                await safe_unlink(output)
+                logger.warning(
+                    f"Sender 快速转封装失败: "
+                    f"{stderr.decode('utf-8', errors='replace').strip()[:200]}"
+                )
+                return None
+            return self._track_temp(output)
+        except Exception as e:
+            await safe_unlink(output) if output.exists() else None
+            logger.warning(f"Sender 快速转封装异常: {e}")
+            return None
+
+    async def _transcode_to_h264(self, input_path: Path, encoder: str) -> Path | None:
+        """将 hevc/av1/vp9 转码到 h264，使用硬件加速或 libx264 回退"""
+        output = input_path.with_name(f"{input_path.stem}_transcode.mp4")
+        mode = (
+            getattr(self.cfg, "video_compress_quality_mode", "balance") or "balance"
+        ).lower()
+        if mode not in QUALITY_PRESETS:
+            mode = "balance"
+        qp = QUALITY_PRESETS[mode].get(encoder, QUALITY_PRESETS[mode]["libx264"])
+
+        cmd: list[str] = ["ffmpeg", "-y", "-i", str(input_path), "-c:v", encoder]
+        if encoder == "libx264":
+            cmd.extend(["-crf", str(qp), "-preset", "veryfast"])
+        elif encoder == "h264_nvenc":
+            cmd.extend(["-cq", str(qp), "-preset", "p2"])
+        elif encoder == "h264_qsv":
+            cmd.extend(["-global_quality", str(qp), "-preset", "veryfast"])
+        elif encoder == "h264_amf":
+            cmd.extend(["-quality", "speed"])
+        else:
+            cmd.extend(["-crf", str(qp), "-preset", "veryfast"])
+        cmd.extend(["-c:a", "aac", "-b:a", "128k"])
+        cmd.append(str(output))
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await proc.communicate()
+            if proc.returncode != 0 or not output.exists() or output.stat().st_size == 0:
+                if output.exists():
+                    await safe_unlink(output)
+                logger.warning(
+                    f"Sender 转码失败: "
+                    f"{stderr.decode('utf-8', errors='replace').strip()[:200]}"
+                )
+                return None
+            return self._track_temp(output)
+        except Exception as e:
+            if output.exists():
+                await safe_unlink(output)
+            logger.warning(f"Sender 转码异常: {e}")
+            return None
+
+    async def _send_video_optimized(self, path: Path) -> Path:
+        """根据视频格式探测结果决定发送方式，返回实际要发送的文件路径
+
+        分类：
+        - A 最优：mp4 + h264 + aac + faststart → 直接发送，跳过 ffmpeg
+        - B 转封装：h264 + aac 但容器/faststart 不符合 → ffmpeg -c copy +faststart
+        - C 转码：明确检测到 hevc/av1/vp9 → 转码为 h264
+        - D 回退：其它（未知编码、ffprobe 失败等）→ 原 _maybe_compress
+        """
+        if not getattr(self.cfg, "video_send_fast_optimization", True):
+            return await self._maybe_compress(path)
+
+        if shutil.which("ffprobe") is None:
+            logger.info("Sender ffprobe 不可用，回退到原有方式")
+            return await self._maybe_compress(path)
+
+        info = await self._probe_video_format(path)
+        if not info or not isinstance(info, dict):
+            logger.info("Sender 无法识别视频格式，回退到原有方式")
+            return await self._maybe_compress(path)
+
+        fmt = info.get("format") or {}
+        streams = info.get("streams") or []
+        container = (fmt.get("format_name") or "").lower()
+
+        video_codec: str | None = None
+        audio_codec: str | None = None
+        for s in streams:
+            if not isinstance(s, dict):
+                continue
+            ctype = s.get("codec_type")
+            cname = (s.get("codec_name") or "").lower()
+            if ctype == "video" and video_codec is None and cname:
+                video_codec = cname
+            elif ctype == "audio" and audio_codec is None and cname:
+                audio_codec = cname
+
+        mp4_tags = ("mp4", "mov", "m4a", "3gp", "3g2", "mj2")
+        is_mp4_like = any(tag in container for tag in mp4_tags)
+        is_faststart = self._has_faststart(path) if is_mp4_like else False
+
+        logger.info(
+            f"Sender 视频格式检测: 容器={container or 'N/A'}, 视频={video_codec or 'N/A'}, "
+            f"音频={audio_codec or 'N/A'}, faststart={is_faststart}"
+        )
+
+        # A：完全符合，直发
+        if (
+            video_codec == "h264"
+            and audio_codec == "aac"
+            and is_mp4_like
+            and is_faststart
+        ):
+            logger.info("Sender 视频格式已支持，直接发送跳过 ffmpeg")
+            return path
+
+        # B：仅需转封装
+        if video_codec == "h264" and audio_codec == "aac":
+            logger.info("Sender 视频格式需转封装，使用快速模式")
+            remuxed = await self._fast_remux(path)
+            if remuxed is not None:
+                return remuxed
+            logger.info("Sender 快速转封装失败，回退到原有方式")
+            return await self._maybe_compress(path)
+
+        # C：明确非兼容编码 → 转码
+        if video_codec in ("hevc", "av1", "vp9"):
+            encoder = self._select_video_encoder()
+            logger.info(
+                f"Sender 检测到 H.265 或 AV1 或 VP9 编码，转码为 H.264（硬件加速: {encoder}）"
+            )
+            transcoded = await self._transcode_to_h264(path, encoder)
+            if transcoded is not None:
+                return transcoded
+            logger.info("Sender 转码失败，回退到原有方式")
+            return await self._maybe_compress(path)
+
+        # D：未知/字段缺失
+        logger.info("Sender 无法识别视频格式，回退到原有方式")
+        return await self._maybe_compress(path)
+
     @staticmethod
     def _iter_contents(result: ParseResult):
         return chain(result.contents, result.repost.contents if result.repost else ())
@@ -246,7 +484,12 @@ class MessageSender:
         if not plan["preview_card"]:
             return False
 
-        if image_path := await self.renderer.render_card(result, cfg=self.cfg):
+        import time as _t
+
+        render_start = _t.time()
+        image_path = await self.renderer.render_card(result, cfg=self.cfg)
+        self._render_elapsed += _t.time() - render_start
+        if image_path:
             await self.sleep_interval()
             await event.send(event.chain_result([self._image_from_path(image_path)]))
             return True
@@ -268,7 +511,12 @@ class MessageSender:
 
         # 合并转发时，卡片以内联形式作为一个消息段参与合并
         if plan["render_card"] and plan["force_merge"]:
-            if image_path := await self.renderer.render_card(result, cfg=self.cfg):
+            import time as _t
+
+            render_start = _t.time()
+            image_path = await self.renderer.render_card(result, cfg=self.cfg)
+            self._render_elapsed += _t.time() - render_start
+            if image_path:
                 segs.append(self._image_from_path(image_path))
 
         # 轻媒体处理
@@ -311,9 +559,12 @@ class MessageSender:
                 continue
 
             match cont:
-                case VideoContent():
-                    compressed_path = await self._maybe_compress(path)
-                    segs.append(self._video_from_path(compressed_path))
+                case VideoContent() as v:
+                    # 封面图复用：直接使用解析阶段已下载的封面，不从视频中重新提取
+                    if v.cover:
+                        logger.info("Sender 封面图复用: 已使用解析阶段封面")
+                    optimized_path = await self._send_video_optimized(path)
+                    segs.append(self._video_from_path(optimized_path))
                 case DynamicContent():
                     segs.append(self._video_from_path(path))
                 case AudioContent():
@@ -527,11 +778,15 @@ class MessageSender:
         groups = self._resolve_groups(result)
         self.cfg.verbose(f"解析结果分组数: {len(groups)}")
 
+        # 重置本次任务的临时统计
+        self._render_elapsed = 0.0
+
         # 累积本次任务的下载/渲染统计
         download_ok = False
         download_size = 0
         download_elapsed = 0.0
         render_ok = False
+        render_elapsed = 0.0
         import time as _time
         download_start = _time.time()
 
@@ -561,6 +816,7 @@ class MessageSender:
             if group_render_ok:
                 render_ok = True
             sent = sent or group_dl_ok or group_render_ok
+        render_elapsed = self._render_elapsed
 
         # 兜底：若分组未捕获到下载大小，遍历 video_contents 累加实际文件大小
         if download_size <= 0:
@@ -592,6 +848,7 @@ class MessageSender:
             segs = self._build_text_fallback(result)
             if not segs:
                 logger.warning("发送结果为空，不执行发送")
+                await self._cleanup_temp_videos()
                 return
 
             try:
@@ -601,4 +858,7 @@ class MessageSender:
             except Exception as e:
                 seg_meta = self._collect_seg_meta(segs)
                 logger.error(f"发送解析结果失败： error={e}, segments={seg_meta}")
+            await self._cleanup_temp_videos()
             return
+
+        await self._cleanup_temp_videos()
