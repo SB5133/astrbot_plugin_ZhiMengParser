@@ -154,22 +154,6 @@ class MessageSender:
     def _record_from_path(path: Path) -> Record:
         return Record.fromFileSystem(str(path))
 
-    async def _maybe_compress(self, path: Path) -> Path:
-        """如开启视频压缩则对视频进行压缩，失败时回退原文件。
-
-        若文件路径已带有 _compressed 后缀，说明下载器已处理过压缩，跳过避免重复压缩。
-        """
-        compressor = getattr(self.cfg, "compressor", None)
-        if not compressor or not compressor.enabled:
-            return path
-        if "_compressed" in path.stem:
-            return path
-        try:
-            return await compressor.compress(path)
-        except Exception as e:
-            logger.error(f"[MessageSender] 视频压缩失败，使用原文件: {e}")
-            return path
-
     # ------------------------------------------------------------------
     # 视频发送优化：探测 → 分类（直发/转封装/转码/回退）
     # ------------------------------------------------------------------
@@ -326,19 +310,22 @@ class MessageSender:
         - A 最优：mp4 + h264 + aac + faststart → 直接发送，跳过 ffmpeg
         - B 转封装：h264 + aac 但容器/faststart 不符合 → ffmpeg -c copy +faststart
         - C 转码：明确检测到 hevc/av1/vp9 → 转码为 h264
-        - D 回退：其它（未知编码、ffprobe 失败等）→ 原 _maybe_compress
+        - D 回退：其它（未知编码、ffprobe 失败等）→ 直接发送原文件
+
+        注意：压缩已在下载阶段的 download_av_and_merge 完成后执行一次，
+        发送阶段不再重复压缩，避免耗时翻倍。
         """
         if not getattr(self.cfg, "video_send_fast_optimization", True):
-            return await self._maybe_compress(path)
+            return path
 
         if shutil.which("ffprobe") is None:
-            logger.info("Sender ffprobe 不可用，回退到原有方式")
-            return await self._maybe_compress(path)
+            logger.info("Sender ffprobe 不可用，直接发送原文件")
+            return path
 
         info = await self._probe_video_format(path)
         if not info or not isinstance(info, dict):
-            logger.info("Sender 无法识别视频格式，回退到原有方式")
-            return await self._maybe_compress(path)
+            logger.info("Sender 无法识别视频格式，直接发送原文件")
+            return path
 
         fmt = info.get("format") or {}
         streams = info.get("streams") or []
@@ -381,8 +368,8 @@ class MessageSender:
             remuxed = await self._fast_remux(path)
             if remuxed is not None:
                 return remuxed
-            logger.info("Sender 快速转封装失败，回退到原有方式")
-            return await self._maybe_compress(path)
+            logger.info("Sender 快速转封装失败，直接发送原文件")
+            return path
 
         # C：明确非兼容编码 → 转码
         if video_codec in ("hevc", "av1", "vp9"):
@@ -393,12 +380,12 @@ class MessageSender:
             transcoded = await self._transcode_to_h264(path, encoder)
             if transcoded is not None:
                 return transcoded
-            logger.info("Sender 转码失败，回退到原有方式")
-            return await self._maybe_compress(path)
+            logger.info("Sender 转码失败，直接发送原文件")
+            return path
 
         # D：未知/字段缺失
-        logger.info("Sender 无法识别视频格式，回退到原有方式")
-        return await self._maybe_compress(path)
+        logger.info("Sender 无法识别视频格式，直接发送原文件")
+        return path
 
     @staticmethod
     def _iter_contents(result: ParseResult):

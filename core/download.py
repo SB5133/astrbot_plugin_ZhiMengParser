@@ -1236,6 +1236,8 @@ class Downloader:
         输出文件统一使用 ``.mp4`` 扩展名，配合 ffmpeg 命令中的 ``-f mp4``
         显式声明容器，避免某些场景下 FFmpeg 报
         ``Unable to find a suitable output format``。
+
+        调用方应仅在音视频合并完成后调用本方法，每个视频只压缩一次。
         """
         output_path = input_path.with_name(f"{input_path.stem}_compressed.mp4")
         if output_path.exists():
@@ -1246,17 +1248,28 @@ class Downloader:
         # 当前实现：流式压缩与回退都走同一个文件到文件的命令。
         # 保留 enable_streaming_compress 开关以兼容未来真正的流式压缩实现。
         if not self.cfg.enable_streaming_compress:
-            return await self._stream_compress(input_path, output_path)
+            logger.info(
+                f"[VideoCompress] 开始压缩（合并后） | input={input_path.name} | "
+                f"output={output_path.name}"
+            )
+            start = _t.time()
+            result = await self._stream_compress(input_path, output_path)
+            logger.info(
+                f"[VideoCompress] 压缩完成，耗时 {_t.time() - start:.2f}s"
+            )
+            return result
 
+        logger.info(
+            f"[VideoCompress] 开始压缩（合并后） | input={input_path.name} | "
+            f"output={output_path.name}"
+        )
         start = _t.time()
         params = self._resolve_compress_params()
         encoder = params.get("encoder", "libx264")
         try:
             result = await self._stream_compress(input_path, output_path)
-            elapsed = _t.time() - start
             logger.info(
-                f"[VideoCompress] 流式压缩成功: {output_path.name}, 编码{encoder}, "
-                f"耗时{elapsed:.2f}s"
+                f"[VideoCompress] 压缩完成，耗时 {_t.time() - start:.2f}s"
             )
             return result
         except Exception as e:
@@ -1264,10 +1277,8 @@ class Downloader:
             await safe_unlink(output_path)
             start = _t.time()
             result = await self._stream_compress(input_path, output_path)
-            elapsed = _t.time() - start
             logger.info(
-                f"[VideoCompress] 传统压缩成功: {output_path.name}, 编码{encoder}, "
-                f"耗时{elapsed:.2f}s"
+                f"[VideoCompress] 压缩完成，耗时 {_t.time() - start:.2f}s"
             )
             return result
 
@@ -1382,17 +1393,11 @@ class Downloader:
 
         size = tmp_path.stat().st_size if tmp_path.exists() else None
 
-        # 压缩
-        final_path = tmp_path
-        if self._should_compress(size):
-            try:
-                final_path = await self._compress_video(tmp_path)
-            except Exception as e:
-                logger.error(f"[Download] 视频压缩失败，使用原文件: {e}")
-                final_path = tmp_path
+        # 注意：单视频下载阶段不再触发压缩，压缩仅在音视频合并完成后执行一次，
+        # 避免 download_av_and_merge 与 sender 重复压缩导致耗时翻倍。
 
         # 缓存结果
-        return self._set_cached_video(cache_url, size, resolution, final_path)
+        return self._set_cached_video(cache_url, size, resolution, tmp_path)
 
     @auto_task
     async def download_audio(
@@ -1737,15 +1742,9 @@ class Downloader:
 
         # 压缩与缓存
         size = video_path.stat().st_size if video_path.exists() else None
-        final_path = video_path
-        if self._should_compress(size):
-            try:
-                final_path = await self._compress_video(video_path)
-            except Exception as e:
-                logger.error(f"[Download] yt-dlp 视频压缩失败，使用原文件: {e}")
-                final_path = video_path
 
-        return self._set_cached_video(cache_url, size, resolution, final_path)
+        # yt-dlp 视频下载阶段不再触发压缩；如需压缩，请走 download_av_and_merge 合并后由其执行。
+        return self._set_cached_video(cache_url, size, resolution, video_path)
 
     @auto_task
     async def ytdlp_download_video_relaxed(
@@ -1840,15 +1839,9 @@ class Downloader:
         await self._post_request_delay()
 
         size = video_path.stat().st_size if video_path.exists() else None
-        final_path = video_path
-        if self._should_compress(size):
-            try:
-                final_path = await self._compress_video(video_path)
-            except Exception as e:
-                logger.error(f"[Download] yt-dlp 宽松压缩失败，使用原文件: {e}")
-                final_path = video_path
 
-        return self._set_cached_video(cache_url, size, resolution, final_path)
+        # yt-dlp 宽松模式下载阶段不再触发压缩；如需压缩，请走 download_av_and_merge 合并后由其执行。
+        return self._set_cached_video(cache_url, size, resolution, video_path)
 
     @auto_task
     async def ytdlp_download_audio(
