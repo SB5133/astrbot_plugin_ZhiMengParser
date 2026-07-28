@@ -126,6 +126,12 @@
         "type": "bool",
         "default": true
     },
+    "video_merge_faststart": {
+        "description": "合并视频时启用 faststart",
+        "hint": "音视频合并时直接写入 -movflags +faststart，输出文件包含 moov 原子。开启后发送阶段可跳过快速转封装，省 10-13 秒。关闭后保持原有合并逻辑，输出文件不含 faststart。",
+        "type": "bool",
+        "default": true
+    },
     "video_compress_custom_preset": {
         "description": "自定义编码速度预设",
         "hint": "自定义模式下生效。不同编码器会映射到对应预设值",

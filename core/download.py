@@ -1485,6 +1485,8 @@ class Downloader:
         a_size = a_path.stat().st_size if a_path.exists() else 0
         total_size = v_size + a_size
         threshold = self.cfg.range_merge_threshold_mb * 1024 * 1024
+        # 将 video_merge_faststart 配置透传到合并函数；缺失时默认开启
+        faststart = bool(getattr(self.cfg, "video_merge_faststart", True))
 
         # 内存自适应模式
         if self.cfg.range_memory_adaptive:
@@ -1494,20 +1496,35 @@ class Downloader:
                 reserve = self.cfg.range_memory_reserve_percent / 100
                 usable = available * (1 - reserve)
                 if total_size < usable * 0.5:
-                    await merge_av(v_path=v_path, a_path=a_path, output_path=output_path)
+                    await merge_av(
+                        v_path=v_path, a_path=a_path, output_path=output_path,
+                        faststart=faststart,
+                    )
                     return output_path
                 elif total_size < usable * 0.8:
                     # 内存合并但降低分块数（由后续下载逻辑处理）
-                    await merge_av(v_path=v_path, a_path=a_path, output_path=output_path)
+                    await merge_av(
+                        v_path=v_path, a_path=a_path, output_path=output_path,
+                        faststart=faststart,
+                    )
                     return output_path
                 else:
-                    await merge_av_streaming(v_path=v_path, a_path=a_path, output_path=output_path)
+                    await merge_av_streaming(
+                        v_path=v_path, a_path=a_path, output_path=output_path,
+                        faststart=faststart,
+                    )
                     return output_path
 
         if total_size < threshold:
-            await merge_av(v_path=v_path, a_path=a_path, output_path=output_path)
+            await merge_av(
+                v_path=v_path, a_path=a_path, output_path=output_path,
+                faststart=faststart,
+            )
         else:
-            await merge_av_streaming(v_path=v_path, a_path=a_path, output_path=output_path)
+            await merge_av_streaming(
+                v_path=v_path, a_path=a_path, output_path=output_path,
+                faststart=faststart,
+            )
         return output_path
 
     @auto_task

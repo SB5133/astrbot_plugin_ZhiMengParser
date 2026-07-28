@@ -62,6 +62,7 @@ async def merge_av(
     v_path: Path,
     a_path: Path,
     output_path: Path,
+    faststart: bool = True,
 ) -> None:
     """合并视频和音频
 
@@ -69,13 +70,18 @@ async def merge_av(
         v_path (Path): 视频文件路径
         a_path (Path): 音频文件路径
         output_path (Path): 输出文件路径
+        faststart (bool): 是否在合并时直接写入 faststart（-movflags +faststart）。
+            开启后 moov 原子前置，发送阶段可跳过转封装，省 10-13s。
     """
     target_path = output_path
     if output_path in (v_path, a_path):
         output_path = output_path.with_name(
             f"{output_path.stem}_merged{output_path.suffix}"
         )
-    logger.info(f"Merging {v_path.name} and {a_path.name} to {output_path.name}")
+    logger.info(
+        f"[Utils] 合并视频（faststart 已{'启用' if faststart else '禁用'}） | "
+        f"v={v_path.name} a={a_path.name} -> {output_path.name}"
+    )
 
     cmd = [
         "ffmpeg",
@@ -90,8 +96,10 @@ async def merge_av(
         "0:v:0",
         "-map",
         "1:a:0",
-        str(output_path),
     ]
+    if faststart:
+        cmd.extend(["-movflags", "+faststart"])
+    cmd.append(str(output_path))
 
     await exec_ffmpeg_cmd(cmd)
     if output_path != target_path:
@@ -108,6 +116,7 @@ async def merge_av_h264(
     v_path: Path,
     a_path: Path,
     output_path: Path,
+    faststart: bool = True,
 ) -> None:
     """合并视频和音频，并使用 H.264 编码
 
@@ -115,9 +124,11 @@ async def merge_av_h264(
         v_path (Path): 视频文件路径
         a_path (Path): 音频文件路径
         output_path (Path): 输出文件路径
+        faststart (bool): 是否在合并时直接写入 faststart（-movflags +faststart）。
     """
     logger.info(
-        f"Merging {v_path.name} and {a_path.name} to {output_path.name} with H.264"
+        f"[Utils] 合并视频（H.264 重编码，faststart 已{'启用' if faststart else '禁用'}） | "
+        f"v={v_path.name} a={a_path.name} -> {output_path.name}"
     )
 
     # 修改命令以确保视频使用 H.264 编码
@@ -142,8 +153,10 @@ async def merge_av_h264(
         "0:v:0",
         "-map",
         "1:a:0",
-        str(output_path),
     ]
+    if faststart:
+        cmd.extend(["-movflags", "+faststart"])
+    cmd.append(str(output_path))
 
     await exec_ffmpeg_cmd(cmd)
     await asyncio.gather(safe_unlink(v_path), safe_unlink(a_path))
@@ -287,6 +300,7 @@ async def merge_av_streaming(
     v_path: Path,
     a_path: Path,
     output_path: Path,
+    faststart: bool = True,
 ) -> None:
     """流式合并视频和音频，逐块写入输出文件，适合大文件
 
@@ -294,10 +308,14 @@ async def merge_av_streaming(
         v_path: 视频文件路径
         a_path: 音频文件路径
         output_path: 输出文件路径
+        faststart: 是否在合并时直接写入 faststart（-movflags +faststart）。
     """
     from astrbot.api import logger
 
-    logger.info(f"[Merge] 流式合并 {v_path.name} 和 {a_path.name} -> {output_path.name}")
+    logger.info(
+        f"[Utils] 合并视频（流式，faststart 已{'启用' if faststart else '禁用'}） | "
+        f"v={v_path.name} a={a_path.name} -> {output_path.name}"
+    )
 
     cmd = [
         "ffmpeg",
@@ -312,8 +330,10 @@ async def merge_av_streaming(
         "0:v:0",
         "-map",
         "1:a:0",
-        str(output_path),
     ]
+    if faststart:
+        cmd.extend(["-movflags", "+faststart"])
+    cmd.append(str(output_path))
 
     await exec_ffmpeg_cmd(cmd)
     cleanup = [p for p in (v_path, a_path) if p != output_path]
