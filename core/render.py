@@ -384,16 +384,26 @@ class Renderer:
         font: FontInfo,
         fill: Color,
     ) -> int:
-        """绘制文本"""
-        await Apilmoji.text(
-            ctx.image,
-            xy,
-            lines,
-            font.font,
-            fill=fill,
-            line_height=font.line_height,
-            source=self.EMOJI_SOURCE,
-        )
+        """绘制文本（emoji 渲染失败时降级为纯文本，避免整卡渲染崩溃）"""
+        try:
+            await Apilmoji.text(
+                ctx.image,
+                xy,
+                lines,
+                font.font,
+                fill=fill,
+                line_height=font.line_height,
+                source=self.EMOJI_SOURCE,
+            )
+        except Exception as e:
+            logger.warning(f"[Render] emoji 渲染失败，降级为纯文本绘制: {e}")
+            for i, line in enumerate(lines):
+                ctx.draw.text(
+                    (xy[0], xy[1] + i * font.line_height),
+                    line,
+                    font=font.font,
+                    fill=fill,
+                )
         return font.line_height * len(lines)
 
     async def _create_card_image(
@@ -576,7 +586,7 @@ class Renderer:
         try:
             img = await self._render_in_thread_pool(result, cfg)
         except Exception:
-            logger.error(f"Failed to render card for result={result}")
+            logger.exception(f"Failed to render card for result={result}")
             return None
 
         if img is None:
