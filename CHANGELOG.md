@@ -1,5 +1,15 @@
 # 更新日志
 
+## v1.6.4
+
+### 修复
+
+- **卡片渲染崩溃（致命）**（`core/render.py`）
+  - 修复 `_calculate_sections` 中 `NameError: name 'cfg' is not defined` 导致的整卡渲染失败。
+  - 根因：`cfg` 在 `render_card` → `_render_in_thread_pool` 中可用，但被 `_run_render`（`asyncio.run(self._create_card_image(result))`）与 `_create_card_image` / `_calculate_sections` 的签名丢弃，导致封面降级分支 `_cover_fallback(None, cfg)` 引用未定义变量。
+  - 修复方式：为 `_create_card_image` / `_calculate_sections` / `_calculate_graphics_section` / `_calculate_repost_section` 补齐 `cfg` 参数并沿调用链透传（默认 `self.cfg`），转发内卡递归路径一并修复。
+  - 该崩溃会使 `render_card` 返回 `None`，进而降级为 `Nodes` 转发消息，被微信 OC 适配器拒绝（`outbound message ignored`），用户最终收不到任何内容。
+
 ## v1.6.3
 
 ### 新增

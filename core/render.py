@@ -410,6 +410,7 @@ class Renderer:
         self,
         result: ParseResult,
         not_repost: bool = True,
+        cfg: "PluginConfig | None" = None,
     ) -> PILImage | None:
         """创建卡片图片（用于递归调用）
 
@@ -418,14 +419,16 @@ class Renderer:
             not_repost: 是否为非转发内容，转发内容为 False
 
         Returns:
-            PIL Image 对象；当 sections 为空时（如降级到纯文本）返回 None
+            PIL Image 对象；            当 sections 为空时（如降级到纯文本）返回 None
         """
+        cfg = cfg or self.cfg
+
         # 计算必要参数
         card_width = self.DEFAULT_CARD_WIDTH
         content_width = card_width - 2 * self.PADDING
 
         # 计算各部分内容的高度
-        sections = await self._calculate_sections(result, content_width)
+        sections = await self._calculate_sections(result, content_width, cfg=cfg)
         if not sections:
             # 显式降级为纯文本
             return None
@@ -745,14 +748,14 @@ class Renderer:
     ) -> PILImage | None:
         """根据配置决定是否在线程池中执行渲染"""
         if not cfg.perf_render_thread_pool:
-            return await self._create_card_image(result)
+            return await self._create_card_image(result, cfg=cfg)
 
         if self._loop is None:
             self._loop = asyncio.get_running_loop()
 
         def _run_render() -> PILImage:
             # 在线程内创建独立事件循环运行原本 async 的渲染流程
-            return asyncio.run(self._create_card_image(result))
+            return asyncio.run(self._create_card_image(result, cfg=cfg))
 
         return await self._loop.run_in_executor(self._executor, _run_render)
 
@@ -848,9 +851,14 @@ class Renderer:
             return output_avatar
 
     async def _calculate_sections(
-        self, result: ParseResult, content_width: int
+        self,
+        result: ParseResult,
+        content_width: int,
+        cfg: "PluginConfig | None" = None,
     ) -> list[SectionData]:
         """计算各部分内容的高度和数据"""
+        cfg = cfg or self.cfg
+
         sections: list[SectionData] = []
 
         # 1. Header 部分
@@ -908,6 +916,7 @@ class Renderer:
                 graphics_section = await self._calculate_graphics_section(
                     graphics_content,
                     content_width,
+                    cfg=cfg,
                 )
                 if graphics_section:
                     sections.append(graphics_section)
@@ -934,16 +943,20 @@ class Renderer:
 
         # 7. 转发内容
         if result.repost:
-            repost_section = await self._calculate_repost_section(result.repost)
+            repost_section = await self._calculate_repost_section(result.repost, cfg=cfg)
             sections.append(repost_section)
 
         return sections
 
     @suppress_exception_async
     async def _calculate_graphics_section(
-        self, graphics_content: GraphicsContent, content_width: int
+        self,
+        graphics_content: GraphicsContent,
+        content_width: int,
+        cfg: "PluginConfig | None" = None,
     ) -> GraphicsSectionData | None:
         """计算图文内容部分的高度和内容"""
+        cfg = cfg or self.cfg
         # 加载图片
         img_path = await graphics_content.get_path()
         with Image.open(img_path) as original_img:
@@ -1039,9 +1052,15 @@ class Renderer:
             text_height=text_height,
         )
 
-    async def _calculate_repost_section(self, repost: ParseResult) -> RepostSectionData:
+    async def _calculate_repost_section(
+        self,
+        repost: ParseResult,
+        cfg: "PluginConfig | None" = None,
+    ) -> RepostSectionData:
         """计算转发内容的高度和内容（递归调用绘制方法）"""
-        repost_image = await self._create_card_image(repost, False)
+        cfg = cfg or self.cfg
+
+        repost_image = await self._create_card_image(repost, False, cfg=cfg)
         # 缩放图片
         scaled_width = int(repost_image.width * self.REPOST_SCALE)
         scaled_height = int(repost_image.height * self.REPOST_SCALE)
