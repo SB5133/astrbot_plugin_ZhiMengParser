@@ -1,5 +1,15 @@
 # 更新日志
 
+## v1.6.5
+
+### 修复
+
+- **卡片渲染对部分媒体下载失败缺乏容错（致命）**（`core/render.py`）
+  - 修复 `_calculate_image_grid_section` 中直接 `await img_content.get_path()` 未捕获异常的问题：当图集中有部分图片下载失败（如快手 CDN 返回 `HTTP payload incomplete`）时，该失败任务的异常（`DownloadException: 媒体下载失败`）会沿调用链抛出，导致整张卡片渲染崩溃、`render_card` 返回 `None`、降级为 `Nodes` 后被微信 OC 拒绝，用户收不到任何内容。
+  - 修复方式：在网格遍历中对 `get_path()` 的异常做 `try/except`，仅跳过下载失败的图片，其余图片照常渲染；若全部图片均失败则安全返回 `None`（卡片仅保留头部/标题/正文）。
+  - 同步加固 `_calculate_header_section` 的头像下载（`get_avatar_path()`）：头像下载失败时降级为无头像渲染，不再拖垮整卡。
+  - 注：该崩溃与 v1.6.4 的 `cfg` NameError 相互独立——即便部署了 v1.6.4，只要存在单张图片下载失败仍会复现，需本版本一并修复。
+
 ## v1.6.4
 
 ### 修复

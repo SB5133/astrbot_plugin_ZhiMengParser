@@ -1012,10 +1012,13 @@ class Renderer:
         if result.author is None:
             return None
 
-        # 加载头像
-        avatar_img = self._load_and_process_avatar(
-            await result.author.get_avatar_path()
-        )
+        # 加载头像（下载失败不应拖垮整张卡片，降级为无头像渲染）
+        try:
+            avatar_path = await result.author.get_avatar_path()
+        except Exception as e:
+            logger.warning(f"[Render] 头像下载失败，使用无头像渲染 | reason={e}")
+            avatar_path = None
+        avatar_img = self._load_and_process_avatar(avatar_path)
 
         # 计算文字区域宽度（始终预留头像空间）
         text_area_width = content_width - (self.AVATAR_SIZE + self.AVATAR_TEXT_GAP)
@@ -1097,7 +1100,12 @@ class Renderer:
         img_count = len(img_contents)
 
         for img_content in img_contents:
-            img_path = await img_content.get_path()
+            try:
+                img_path = await img_content.get_path()
+            except Exception as e:
+                # 单张图片下载失败不应拖垮整张卡片：跳过该图，继续渲染其余图片
+                logger.warning(f"[Render] 图片下载失败，跳过该图 | reason={e}")
+                continue
             # 使用装饰器保护的方法，失败会返回 None
             img = await self._load_and_process_grid_image(
                 img_path, content_width, img_count
