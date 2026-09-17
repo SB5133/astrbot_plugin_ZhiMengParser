@@ -617,7 +617,14 @@ class ParserPlugin(Star):
 
         cfg.verbose(f"[at_after_parse] 发送 @用户 消息: {text}")
 
-        segs: list[BaseMessageComponent] = [At(qq=user_id, name=user_name), Plain(text)]
+        segs: list[BaseMessageComponent] = []
+        if event.is_private_chat():
+            # OneBot v11 不允许在私聊里发送 at 元素（retcode=1400），私聊场景只发文本
+            cfg.verbose("[at_after_parse] 私聊场景，跳过 @ 元素")
+        else:
+            segs.append(At(qq=user_id, name=user_name))
+        segs.append(Plain(text))
+
         msg_id = self._get_source_message_id(event)
         if msg_id is not None:
             segs.insert(0, Reply(id=msg_id))

@@ -888,7 +888,14 @@ class Renderer:
             cover_path = None
 
         if not cover_path or not cover_path.exists():
-            cover_path, cover_force_text_only = self._cover_fallback(None, cfg)
+            # 没有视频封面（纯图文作品）时，若本身已有图集/图文内容，
+            # 就不要用占位图顶上：占位图会让下面的图片网格/图文 elif 分支永远进不去，
+            # 结果卡片上只显示占位 logo，真图全丢。
+            if result.img_contents or result.graphics_contents:
+                cover_path = None
+                cover_force_text_only = False
+            else:
+                cover_path, cover_force_text_only = self._cover_fallback(None, cfg)
 
         if cover_force_text_only:
             # 放弃卡片渲染，由 _create_card_image 返回 None 让 render_card 返回 None

@@ -74,7 +74,12 @@ class KuaiShouParser(BaseParser):
             )
 
         # 添加图片内容
-        if img_urls := photo.img_urls:
+        img_urls = photo.img_urls
+        # 快手新版图文作品不再走 ext_params.atlas，而是把图放在 coverUrls，
+        # 老逻辑在这里会拿到空列表 → 最终只发一条文本、图全丢
+        if not img_urls and (photo.is_picture or not photo.video_url):
+            img_urls = photo.cover_url_list
+        if img_urls:
             contents.extend(
                 self.create_image_contents(img_urls, headers=self.ios_headers)
             )
@@ -130,6 +135,8 @@ class Photo(Struct):
     head_url: str | None = field(default=None, name="headUrl")
     cover_urls: list[CdnUrl] = field(name="coverUrls", default_factory=list)
     main_mv_urls: list[CdnUrl] = field(name="mainMvUrls", default_factory=list)
+    single_picture: bool = field(default=False, name="singlePicture")
+    photo_type: str | None = field(default=None, name="photoType")
     ext_params: ExtParams = field(name="ext_params", default_factory=ExtParams)
 
     like_count: int | str | None = field(default=None, name="likeCount")
@@ -148,6 +155,26 @@ class Photo(Struct):
     @property
     def cover_url(self):
         return choice(self.cover_urls).url if len(self.cover_urls) != 0 else None
+
+    @property
+    def cover_url_list(self) -> list[str]:
+        """封面图地址。
+
+        coverUrls 里放的是同一张图的多个 CDN 镜像（路径相同、仅 host 不同，
+        如 p2.a.yximgs.com / p23.a.yximgs.com），全部返回会导致重复发同一张图，
+        因此这里只取第一个有效地址。
+        """
+        for c in self.cover_urls:
+            if c.url:
+                return [c.url]
+        return []
+
+    @property
+    def is_picture(self) -> bool:
+        """是否为图文作品（非视频）"""
+        if self.single_picture:
+            return True
+        return "PICTURE" in (self.photo_type or "").upper()
 
     @property
     def video_url(self):
