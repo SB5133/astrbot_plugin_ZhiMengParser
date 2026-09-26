@@ -462,6 +462,22 @@ class BaseParser:
             )
         return VideoContent(path_task, cover_task, duration)
 
+    def create_image_content(
+        self,
+        image_url: str,
+        headers: dict[str, str] | None = None,
+        candidates: list[str] | None = None,
+    ):
+        """创建单个图片内容（candidates 为该图的备选 CDN 列表）"""
+        task = self.downloader.download_img(
+            image_url,
+            headers=headers or self.headers,
+            proxy=self.proxy,
+            platform=self.platform.name,
+            candidates=candidates,
+        )
+        return ImageContent(task)
+
     def create_image_contents(
         self,
         image_urls: list[str],
@@ -475,15 +491,28 @@ class BaseParser:
         """
         contents: list[ImageContent] = []
         for i, url in enumerate(image_urls):
-            task = self.downloader.download_img(
-                url,
-                headers=headers or self.headers,
-                proxy=self.proxy,
-                platform=self.platform.name,
-                candidates=candidates[i] if candidates and i < len(candidates) else None,
+            contents.append(
+                self.create_image_content(
+                    url,
+                    headers=headers,
+                    candidates=candidates[i] if candidates and i < len(candidates) else None,
+                )
             )
-            contents.append(ImageContent(task))
         return contents
+
+    def create_dynamic_content(
+        self,
+        dynamic_url: str,
+        headers: dict[str, str] | None = None,
+    ):
+        """创建单个动态图片内容（发送阶段按视频消息发出）"""
+        task = self.downloader.download_video(
+            dynamic_url,
+            headers=headers or self.headers,
+            proxy=self.proxy,
+            platform=self.platform.name,
+        )
+        return DynamicContent(task)
 
     def create_dynamic_contents(
         self,
@@ -493,13 +522,7 @@ class BaseParser:
         """创建动态图片内容列表"""
         contents: list[DynamicContent] = []
         for url in dynamic_urls:
-            task = self.downloader.download_video(
-                url,
-                headers=headers or self.headers,
-                proxy=self.proxy,
-                platform=self.platform.name,
-            )
-            contents.append(DynamicContent(task))
+            contents.append(self.create_dynamic_content(url, headers=headers))
         return contents
 
     def create_audio_content(

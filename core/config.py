@@ -163,6 +163,7 @@ class ParserItem(ConfigNode):
     # 快手实况图(动态图)解析
     live_photo_enabled: bool | None
     live_photo_send_image: bool | None
+    live_photo_send_video: bool | None
     live_photo_api: str | None
     live_photo_native_url: str | None
 

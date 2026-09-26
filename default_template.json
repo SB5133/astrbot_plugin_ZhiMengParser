@@ -20,6 +20,7 @@
     "cookies": "",
     "live_photo_enabled": true,
     "live_photo_send_image": true,
+    "live_photo_send_video": true,
     "live_photo_api": "https://api.bugpk.com/api/ksjx?url={url}",
     "live_photo_native_url": ""
   },

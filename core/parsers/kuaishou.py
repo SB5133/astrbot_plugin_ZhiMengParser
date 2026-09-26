@@ -86,24 +86,21 @@ class KuaiShouParser(BaseParser):
         # 简洁的构建方式
         contents = []
 
-        # 实况图检测:
-        # - 单图作品: ext_params.single.type == 3, H5 数据里的确切标记
-        # - 图集作品: H5 数据与普通图集无法区分 (atlas.type 恒为 1), 而实况
-        #   视频只存在于 App 原生接口, 只能探测聚合接口, 返回 type=="live"
-        #   才切实况路径, 探测失败/非 live 静默走原图集路径
-        live_urls: list[str] = []
+        # 实况探测: 槽位列表与图集按索引对齐 (实况=直链, 静态=None)
+        live_slots: list[str | None] = []
         probe_live = photo.is_live_photo or (
             photo.is_picture and bool(photo.img_urls) and not photo.video_url
         )
         if probe_live and self.mycfg.live_photo_enabled is not False:
             # 单图实况已由 H5 标记确认, 接口没兑现也计入接口失败;
             # 图集探测未确认, 返回非 live 属正常否定, 不计入
-            live_urls = await self._fetch_live_photo_urls(
+            live_slots = await self._fetch_live_photo_urls(
                 url, confirmed=photo.is_live_photo
             )
-            if live_urls:
+            if live_slots:
+                live_n = sum(1 for s in live_slots if s)
                 logger.info(
-                    f"[快手] 检测到实况图, 获取到 {len(live_urls)} 个实况视频"
+                    f"[快手] 检测到实况图, {live_n}/{len(live_slots)} 张为实况"
                 )
 
         # 添加视频内容
@@ -114,7 +111,11 @@ class KuaiShouParser(BaseParser):
                 )
             )
 
-        # 添加图片内容
+        # 发送开关: 实况条目直接出视频(可关), 静态条目出图(可关)
+        send_live_video = self.mycfg.live_photo_send_video is not False
+        send_image = self.mycfg.live_photo_send_image is not False
+
+        # 图片 URL 收集
         img_urls: list[str] = []
         img_candidates: list[list[str]] | None = None
         atlas = photo.ext_params.atlas
@@ -125,19 +126,41 @@ class KuaiShouParser(BaseParser):
         # 老逻辑在这里会拿到空列表 → 最终只发一条文本、图全丢
         elif photo.is_picture or not photo.video_url:
             img_urls = photo.cover_url_list
-        # 实况视频已拿到时, 静态图按配置决定是否同时发送
-        if img_urls and not (live_urls and self.mycfg.live_photo_send_image is False):
-            contents.extend(
-                self.create_image_contents(
-                    img_urls, headers=self.ios_headers, candidates=img_candidates
-                )
-            )
 
-        # 添加实况视频内容 (DynamicContent, 发送阶段按视频消息发出)
-        if live_urls:
-            contents.extend(
-                self.create_dynamic_contents(live_urls, headers=self.ios_headers)
-            )
+        # 内容组装
+        if (
+            live_slots
+            and len(live_slots) > 1  # 对齐仅用于图集; 单图实况保持图+视频双发
+            and img_urls
+            and len(live_slots) == len(img_urls)
+        ):
+            # 混搭对齐模式: 按图集原始顺序, 实况条目出视频, 静态条目出图
+            for i, slot in enumerate(live_slots):
+                if slot and send_live_video:
+                    contents.append(
+                        self.create_dynamic_content(slot, headers=self.ios_headers)
+                    )
+                elif send_image:
+                    contents.append(
+                        self.create_image_content(
+                            img_urls[i],
+                            headers=self.ios_headers,
+                            candidates=img_candidates[i] if img_candidates else None,
+                        )
+                    )
+        else:
+            # 老模式(探测失败/槽位数不匹配/native 返回): 全部静态图 + 实况视频追加
+            if img_urls and (send_image or not (any(live_slots) and send_live_video)):
+                contents.extend(
+                    self.create_image_contents(
+                        img_urls, headers=self.ios_headers, candidates=img_candidates
+                    )
+                )
+            live_videos = [s for s in live_slots if s]
+            if live_videos and send_live_video:
+                contents.extend(
+                    self.create_dynamic_contents(live_videos, headers=self.ios_headers)
+                )
 
         # 构建作者
         author = self.create_author(
@@ -159,8 +182,12 @@ class KuaiShouParser(BaseParser):
 
     async def _fetch_live_photo_urls(
         self, page_url: str, confirmed: bool = False
-    ) -> list[str]:
+    ) -> list[str | None]:
         """通过聚合解析接口换取快手实况图的视频直链。
+
+        返回与图集按索引对齐的槽位列表: 实况条目为视频直链, 静态条目为
+        None (作者混搭上传时接口按图集顺序逐条返回, 空 video 即该图为
+        静态图, 不是数据缺失)。全空槽位归一为空列表(视为非实况)。
 
         流程: 按 live_photo_api 配置逐行取接口模板(空则用默认), 依序尝试,
         第一个返回实况直链的接口生效。HTTP 失败/结构变化视为接口失败,
@@ -197,11 +224,11 @@ class KuaiShouParser(BaseParser):
         api_fail = 0
         confirmed_miss = False
         for template in templates:
-            urls = await self._try_live_api(template, page_url)
-            if urls:
+            slots = await self._try_live_api(template, page_url)
+            if slots and any(slots):
                 self._live_api_fail_count = 0
-                return urls
-            if urls is None:
+                return slots
+            if slots is None:
                 api_fail += 1  # 接口不可用/结构异常
             elif confirmed:
                 confirmed_miss = True  # 接口正常但未返回实况
@@ -244,11 +271,12 @@ class KuaiShouParser(BaseParser):
             pass
         return []
 
-    async def _try_live_api(self, template: str, page_url: str) -> list[str] | None:
+    async def _try_live_api(self, template: str, page_url: str) -> list[str | None] | None:
         """尝试单个接口模板。
 
         Returns:
-            实况直链列表; None 表示接口不可用或返回结构异常;
+            与图集索引对齐的槽位列表(实况=直链, 静态=None);
+            None 表示接口不可用或返回结构异常;
             空列表表示接口正常响应但不是实况类型。
         """
         api_url = template.format(url=quote(page_url, safe=""))
@@ -282,12 +310,12 @@ class KuaiShouParser(BaseParser):
                 payload = data.get("data") or {}
                 if str(payload.get("type") or "").lower() != "live":
                     return []
-                videos: list[str] = []
+                # 保留槽位: 空 video = 该图本为静态图(作者混搭上传), 不是数据缺失
+                slots: list[str | None] = []
                 for item in payload.get("live_photo") or []:
                     video = (item or {}).get("video") if isinstance(item, dict) else None
-                    if video:
-                        videos.append(video)
-                return videos
+                    slots.append(video if video else None)
+                return slots
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"[快手] 实况图接口响应解析失败: {e}, 尝试下一接口/降级")
                 return None
