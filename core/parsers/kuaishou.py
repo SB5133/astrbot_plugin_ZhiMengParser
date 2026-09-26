@@ -283,7 +283,10 @@ class KuaiShouParser(BaseParser):
         for attempt in range(2):
             try:
                 async with self.session.get(
-                    api_url, headers=self.ios_headers, proxy=self.proxy
+                    api_url, headers=self.ios_headers, proxy=self.proxy,
+                    # 聚合接口偶发拖到 25s+ (后端拉快手慢), 单接口独立短超时,
+                    # 超时即换下一接口/降级, 不让三方接口拖死整次解析
+                    timeout=aiohttp.ClientTimeout(total=15),
                 ) as resp:
                     if resp.status >= 400:
                         logger.warning(
