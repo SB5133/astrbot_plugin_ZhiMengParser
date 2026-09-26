@@ -180,8 +180,15 @@ class AdaptiveSemaphoreManager:
                 )
 
     def _resize(self, platform: str, new_size: int) -> None:
-        """调整指定平台的信号量容量"""
-        self._semaphores[platform] = asyncio.Semaphore(new_size)
+        """调整指定平台下载并发容量。
+
+        只原地修改 Semaphore._value, 不替换对象: 替换对象会让仍在旧
+        信号量上等待/持有的任务与走新信号量的新任务并存, 等效两套
+        并发限制同时生效, 实际并发翻倍, 图集批量下载时进一步放大限流失败。
+        """
+        sem = self._semaphores.get(platform)
+        if sem is not None:
+            sem._value = max(0, int(new_size))
         self._current[platform] = new_size
 
 
@@ -868,12 +875,23 @@ class Downloader:
                             ) as response:
                                 current_host = self._extract_host(str(response.url))
 
-                                # 403/429 立即切换节点
+                                # 403/429 限流: 有备选节点立即切换; 单节点必须退避重试,
+                                # 否则图集类单 URL 下载被一次限流直接判死(0 重试)
                                 if response.status in (403, 429):
-                                    logger.warning(
-                                        f"Download 节点 {current_host} 返回 {response.status}，切换至下一个 CDN"
-                                    )
-                                    break  # 跳出当前节点重试，切换下一个节点
+                                    if current_node_idx + 1 < len(all_nodes):
+                                        logger.warning(
+                                            f"Download 节点 {current_host} 返回 {response.status}，切换至下一个 CDN"
+                                        )
+                                        break
+                                    if attempt < max_retries:
+                                        wait = min(1.0 * (2**attempt), 8.0)
+                                        logger.warning(
+                                            f"Download 节点 {current_host} 限流 {response.status} 且无备选 CDN, "
+                                            f"等待 {wait:.1f}s 后重试 | file={file_path.name}"
+                                        )
+                                        await sleep(wait)
+                                        continue
+                                    break  # 重试用尽, 交由最终失败处理
 
                                 if response.status >= 400:
                                     raise ClientError(f"HTTP {response.status} {response.reason}")
@@ -930,11 +948,22 @@ class Downloader:
                             last_exc = exc
                             error_type = self._classify_download_error(exc)
 
-                            # 限流错误直接切换节点，不等待重试
+                            # 限流错误: 有备选节点直接切换; 单节点退避重试,
+                            # 不能一次限流就把无备选 URL 直接判死
                             if error_type in ERROR_RATE_LIMIT or (isinstance(exc, ClientError) and "429" in str(exc)):
-                                logger.warning(
-                                    f"Download 节点 {current_host} 限流，切换至下一个 CDN"
-                                )
+                                if current_node_idx + 1 < len(all_nodes):
+                                    logger.warning(
+                                        f"Download 节点 {current_host} 限流，切换至下一个 CDN"
+                                    )
+                                    break
+                                if attempt < max_retries:
+                                    wait = min(1.0 * (2**attempt), 8.0)
+                                    logger.warning(
+                                        f"Download 节点 {current_host} 限流且无备选 CDN, "
+                                        f"等待 {wait:.1f}s 后重试 | file={file_path.name} | error={exc}"
+                                    )
+                                    await sleep(wait)
+                                    continue
                                 break
 
                             if attempt < max_retries:

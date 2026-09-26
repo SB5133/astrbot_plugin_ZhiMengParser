@@ -1,5 +1,6 @@
 import re
 import time
+from asyncio import sleep
 from random import choice
 from typing import ClassVar, TypeAlias
 from urllib.parse import quote
@@ -114,15 +115,22 @@ class KuaiShouParser(BaseParser):
             )
 
         # 添加图片内容
-        img_urls = photo.img_urls
+        img_urls: list[str] = []
+        img_candidates: list[list[str]] | None = None
+        atlas = photo.ext_params.atlas
+        if atlas.img_urls:
+            # 图集: 主 URL 轮换 CDN + 其余 CDN 作限流备选
+            img_urls, img_candidates = atlas.img_urls_with_fallback
         # 快手新版图文作品不再走 ext_params.atlas，而是把图放在 coverUrls，
         # 老逻辑在这里会拿到空列表 → 最终只发一条文本、图全丢
-        if not img_urls and (photo.is_picture or not photo.video_url):
+        elif photo.is_picture or not photo.video_url:
             img_urls = photo.cover_url_list
         # 实况视频已拿到时, 静态图按配置决定是否同时发送
         if img_urls and not (live_urls and self.mycfg.live_photo_send_image is False):
             contents.extend(
-                self.create_image_contents(img_urls, headers=self.ios_headers)
+                self.create_image_contents(
+                    img_urls, headers=self.ios_headers, candidates=img_candidates
+                )
             )
 
         # 添加实况视频内容 (DynamicContent, 发送阶段按视频消息发出)
@@ -244,39 +252,46 @@ class KuaiShouParser(BaseParser):
             空列表表示接口正常响应但不是实况类型。
         """
         api_url = template.format(url=quote(page_url, safe=""))
-        try:
-            async with self.session.get(
-                api_url, headers=self.ios_headers, proxy=self.proxy
-            ) as resp:
-                if resp.status >= 400:
+        for attempt in range(2):
+            try:
+                async with self.session.get(
+                    api_url, headers=self.ios_headers, proxy=self.proxy
+                ) as resp:
+                    if resp.status >= 400:
+                        logger.warning(
+                            f"[快手] 实况图接口请求失败 HTTP {resp.status}: {template}, "
+                            "尝试下一接口/降级"
+                        )
+                        return None
+                    data = await resp.json(content_type=None)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[快手] 实况图接口请求异常: {e}, 尝试下一接口/降级")
+                return None
+
+            try:
+                if str(data.get("code")) != "200":
+                    # code=500 通常是聚合接口后端取快手数据的瞬时超时(实测约 1/4
+                    # 概率), 原地短重试一次, 显著降低图集实况被误降级为静态图
+                    if str(data.get("code")) == "500" and attempt == 0:
+                        await sleep(1.5)
+                        continue
                     logger.warning(
-                        f"[快手] 实况图接口请求失败 HTTP {resp.status}: {template}, "
-                        "尝试下一接口/降级"
+                        f"[快手] 实况图接口返回异常 code={data.get('code')}: {template}"
                     )
                     return None
-                data = await resp.json(content_type=None)
-        except Exception as e:  # noqa: BLE001
-            logger.warning(f"[快手] 实况图接口请求异常: {e}, 尝试下一接口/降级")
-            return None
-
-        try:
-            if str(data.get("code")) != "200":
-                logger.warning(
-                    f"[快手] 实况图接口返回异常 code={data.get('code')}: {template}"
-                )
+                payload = data.get("data") or {}
+                if str(payload.get("type") or "").lower() != "live":
+                    return []
+                videos: list[str] = []
+                for item in payload.get("live_photo") or []:
+                    video = (item or {}).get("video") if isinstance(item, dict) else None
+                    if video:
+                        videos.append(video)
+                return videos
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[快手] 实况图接口响应解析失败: {e}, 尝试下一接口/降级")
                 return None
-            payload = data.get("data") or {}
-            if str(payload.get("type") or "").lower() != "live":
-                return []
-            videos: list[str] = []
-            for item in payload.get("live_photo") or []:
-                video = (item or {}).get("video") if isinstance(item, dict) else None
-                if video:
-                    videos.append(video)
-            return videos
-        except Exception as e:  # noqa: BLE001
-            logger.warning(f"[快手] 实况图接口响应解析失败: {e}, 尝试下一接口/降级")
-            return None
+        return None
 
 
 class CdnUrl(Struct):
@@ -296,6 +311,27 @@ class Atlas(Struct):
             return []
         cdn = choice(self.cdn_list).cdn
         return [f"https://{cdn}/{url}" for url in self.img_route_list]
+
+    @property
+    def img_urls_with_fallback(self) -> tuple[list[str], list[list[str]]]:
+        """主 URL 轮换 CDN + 其余 CDN 作备选。
+
+        图集几十张图全压同一个随机 CDN 时, 突发并发极易触发快手 CDN
+        限流(403/429), 且原实现没有备选节点可切。轮换主 CDN 摊薄单
+        host 压力, 备选列表让限流时下载器自动切换。
+        """
+        if len(self.cdn_list) == 0 or len(self.img_route_list) == 0:
+            return [], []
+        cdns = [c.cdn for c in self.cdn_list if c.cdn]
+        if not cdns:
+            return [], []
+        urls: list[str] = []
+        cands: list[list[str]] = []
+        for i, route in enumerate(self.img_route_list):
+            primary = cdns[i % len(cdns)]
+            urls.append(f"https://{primary}/{route}")
+            cands.append([f"https://{c}/{route}" for c in cdns if c != primary])
+        return urls, cands
 
 
 class SingleParams(Struct):

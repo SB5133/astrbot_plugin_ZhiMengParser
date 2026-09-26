@@ -466,15 +466,21 @@ class BaseParser:
         self,
         image_urls: list[str],
         headers: dict[str, str] | None = None,
+        candidates: list[list[str]] | None = None,
     ):
-        """创建图片内容列表"""
+        """创建图片内容列表
+
+        candidates: 与 image_urls 一一对应的备选 CDN URL 列表（可含空项）,
+        下载失败/限流时下载器会自动切换节点。
+        """
         contents: list[ImageContent] = []
-        for url in image_urls:
+        for i, url in enumerate(image_urls):
             task = self.downloader.download_img(
                 url,
                 headers=headers or self.headers,
                 proxy=self.proxy,
                 platform=self.platform.name,
+                candidates=candidates[i] if candidates and i < len(candidates) else None,
             )
             contents.append(ImageContent(task))
         return contents
