@@ -164,6 +164,7 @@ class ParserItem(ConfigNode):
     live_photo_enabled: bool | None
     live_photo_send_image: bool | None
     live_photo_api: str | None
+    live_photo_native_url: str | None
 
     @property
     def name(self) -> str:

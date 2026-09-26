@@ -1598,6 +1598,12 @@
                         "type": "string",
                         "default": "https://api.bugpk.com/api/ksjx?url={url}"
                     },
+                    "live_photo_native_url": {
+                        "description": "实况图原生代发服务(可选)",
+                        "hint": "FridaRPC 服务地址(如 http://192.168.2.31:8765)，通过快手 App 进程内代发获取原生实况直链，热更自动跟随、不依赖三方接口。留空则不启用。服务不可达时自动回落到上方三方接口链",
+                        "type": "string",
+                        "default": ""
+                    },
                     "range_download_max_parts": {
                         "description": "该平台最大分块数上限",
                         "hint": "覆盖全局最大分块数上限，0表示使用全局值",

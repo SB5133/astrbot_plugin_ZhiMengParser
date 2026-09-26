@@ -4,6 +4,7 @@ from random import choice
 from typing import ClassVar, TypeAlias
 from urllib.parse import quote
 
+import aiohttp
 import msgspec
 from msgspec import Struct, field
 
@@ -170,6 +171,15 @@ class KuaiShouParser(BaseParser):
             # 熔断冷却期, 静默跳过
             return []
 
+        # 原生代发服务优先 (FridaRPC, App 进程内代发, 热更自动跟随);
+        # 本地服务挂了不值得等, 3s 短超时, 失败静默回落三方接口链
+        native_url = (self.mycfg.live_photo_native_url or "").strip()
+        if native_url:
+            native_videos = await self._fetch_live_photo_native(native_url, page_url)
+            if native_videos:
+                self._live_api_fail_count = 0
+                return native_videos
+
         templates = [
             t.strip()
             for t in (self.mycfg.live_photo_api or "").splitlines()
@@ -199,6 +209,31 @@ class KuaiShouParser(BaseParser):
                 )
         else:
             self._live_api_fail_count = 0
+        return []
+
+    async def _fetch_live_photo_native(
+        self, native_url: str, page_url: str
+    ) -> list[str]:
+        """从 FridaRPC 原生代发服务获取实况视频直链。
+
+        GET {native_url}/live_photo?url=<分享链接> -> {"ok": true, "videos": [...]}
+        任何失败(服务不可达/超时/响应变化)静默返回空列表, 回落三方接口链。
+        """
+        api = f"{native_url.rstrip('/')}/live_photo?url={quote(page_url, safe='')}"
+        try:
+            async with self.session.get(
+                api,
+                headers=self.ios_headers,
+                proxy=self.proxy,
+                timeout=aiohttp.ClientTimeout(total=3),
+            ) as resp:
+                if resp.status >= 400:
+                    return []
+                data = await resp.json(content_type=None)
+            if data and data.get("ok"):
+                return list(data.get("videos") or [])
+        except Exception:  # noqa: BLE001
+            pass
         return []
 
     async def _try_live_api(self, template: str, page_url: str) -> list[str] | None:

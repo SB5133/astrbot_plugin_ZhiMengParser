@@ -1,5 +1,14 @@
 # 更新日志
 
+## v1.6.7
+
+### 新增
+
+- **快手实况原生代发服务接入（FridaRPC，可选）**（`core/parsers/kuaishou.py` + `core/config.py`）
+  - 新配置 `live_photo_native_url`：指向 FridaRPC 代发服务（工程见 `/home/zm/zmbot/astrbot_plugin_ZhiMengParser_FridaRPC`，通过 frida 驱动快手 App 进程内以 App 自带 OkHttp 代发请求，签名/cookie/风控 token 全部原生，App 热更自动跟随）。
+  - 优先级：native 服务（3s 短超时）→ 三方接口链 → 静态图降级。native 不可达不影响三方链，留空配置则完全不启用。
+  - 彻底摆脱三方接口单点依赖的终局方案；Android 运行时支持真机 USB / 模拟器 / redroid 三种接入。
+
 ## v1.6.6
 
 ### 新增
