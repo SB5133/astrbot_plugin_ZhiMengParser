@@ -1,5 +1,13 @@
 # 更新日志
 
+## v1.6.8
+
+### 修复
+
+- **快手实况图发送失败（NapCat `retcode=1400`）**（`core/sender.py`）
+  - 根因：OneBot/NapCat 协议规定 `Video` 消息段必须独占一条消息，与 `Image`/`Plain` 同段发送会被整体拒绝（`element "video" must be the only segment in a message`），实况图的 `[Image, Video]` 组合必踩。
+  - 修复：群聊发送前新增 `_split_video_chunks()` 预拆分——每个 `Video` 段独立成包单独发送，其余段（静态图/文字）合并为一条；`Reply` 前缀跟随第一个非 Video 包；合并转发（`Nodes`）整体不拆。拆分间保留 `sleep_interval` 节流。
+
 ## v1.6.7
 
 ### 新增

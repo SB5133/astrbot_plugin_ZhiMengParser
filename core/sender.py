@@ -709,16 +709,52 @@ class MessageSender:
             self.cfg.verbose(f"本组无媒体段，已发送内容={sent_any}")
             return sent_any
 
+        chunks = self._split_video_chunks(segs)
+        if len(chunks) > 1:
+            self.cfg.verbose(f"Video 段独占要求, 拆分为 {len(chunks)} 条消息发送")
+
+        ok = sent_any
         try:
-            await self.sleep_interval()
-            await event.send(event.chain_result(segs))
-            self.cfg.verbose(f"本组消息已发送: {self._collect_seg_meta(segs)}")
-            return True
+            for chunk in chunks:
+                await self.sleep_interval()
+                await event.send(event.chain_result(chunk))
+                ok = True
+            return ok
         except Exception as e:
             seg_meta = self._collect_seg_meta(segs)
             logger.error(f"发送解析结果失败： error={e}, segments={seg_meta}")
             # 发送失败时，如果之前已发送过提示/解析文本/卡片，仍视为本组有成功输出
-            return sent_any
+            return ok
+
+    @staticmethod
+    def _split_video_chunks(segs: list[BaseMessageComponent]) -> list[list]:
+        """NapCat/OneBot 要求 Video 段独占一条消息 (与图片/文本等同发被拒 retcode=1400)。
+
+        将扁平消息段切分为若干"消息包": 每个 Video 独占一条, 其余段合并发送;
+        开头的 Reply 前缀跟随第一个非 Video 包, 纯 Video 组时独立成包。
+        合并转发 (Nodes) 无需切分。
+        """
+        if not segs or isinstance(segs[0], Nodes):
+            return [segs]
+        lead: list[BaseMessageComponent] = []
+        rest = list(segs)
+        if rest and isinstance(rest[0], Reply):
+            lead = [rest.pop(0)]
+        if not any(isinstance(s, Video) for s in rest):
+            return [[*lead, *rest]] if (lead or rest) else []
+        chunks: list[list] = []
+        cur: list[BaseMessageComponent] = list(lead)
+        for s in rest:
+            if isinstance(s, Video):
+                if cur:
+                    chunks.append(cur)
+                    cur = []
+                chunks.append([s])
+            else:
+                cur.append(s)
+        if cur:
+            chunks.append(cur)
+        return chunks
 
     @staticmethod
     def _collect_seg_meta(segs: list[BaseMessageComponent]) -> list[dict[str, str]]:
