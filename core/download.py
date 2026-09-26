@@ -854,15 +854,19 @@ class Downloader:
                         speed_mbps = await self._test_node_speed(current_url, final_headers, proxy)
                         if 0 < speed_mbps < 0.5:
                             if current_node_idx + 1 >= len(all_nodes):
-                                raise DownloadException(
-                                    f"主节点 {current_host} 限流（速度 {speed_mbps:.1f}MB/s），"
-                                    f"且无备选 CDN 节点可切换"
+                                # 测速只是选路优化, 无判死权: 慢节点(如 0.2MB/s)
+                                # 下载一张几百 KB 的图绰绰有余, 交给下方真实
+                                # 下载(带完整重试链)决定成败, 避免误杀
+                                logger.warning(
+                                    f"Download 节点 {current_host} 测速偏低（速度 {speed_mbps:.1f}MB/s）"
+                                    f"且无备选 CDN, 仍尝试直接下载 | file={file_path.name}"
                                 )
-                            logger.warning(
-                                f"Download 节点 {current_host} 限流，切换至下一个 CDN（速度：{speed_mbps:.1f}MB/s）"
-                            )
-                            current_node_idx += 1
-                            continue
+                            else:
+                                logger.warning(
+                                    f"Download 节点 {current_host} 限流，切换至下一个 CDN（速度：{speed_mbps:.1f}MB/s）"
+                                )
+                                current_node_idx += 1
+                                continue
 
                     for attempt in range(max_retries + 1):
                         try:
