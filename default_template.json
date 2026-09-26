@@ -17,7 +17,10 @@
     "__template_key": "kuaishou",
     "enable": true,
     "use_proxy": false,
-    "cookies": ""
+    "cookies": "",
+    "live_photo_enabled": true,
+    "live_photo_send_image": true,
+    "live_photo_api": "https://api.bugpk.com/api/ksjx?url={url}"
   },
   {
     "__template_key": "weibo",

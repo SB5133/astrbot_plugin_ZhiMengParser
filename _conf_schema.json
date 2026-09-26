@@ -1580,6 +1580,24 @@
                         "type": "text",
                         "default": ""
                     },
+                    "live_photo_enabled": {
+                        "description": "实况图解析",
+                        "hint": "开启后，快手实况图(动态图)会通过聚合解析接口换取实况视频，与静态图一起发送；接口失败时自动降级为仅发送静态图，不影响正常解析",
+                        "type": "bool",
+                        "default": true
+                    },
+                    "live_photo_send_image": {
+                        "description": "实况图同时发送静态图",
+                        "hint": "开启后，实况图作品会先发静态图再发实况视频；关闭后只发实况视频",
+                        "type": "bool",
+                        "default": true
+                    },
+                    "live_photo_api": {
+                        "description": "实况图解析接口",
+                        "hint": "用于换取快手实况视频直链的聚合解析接口模板，{url} 为分享链接占位符。支持每行填写一个接口，按顺序尝试，第一个返回实况直链的生效；接口不可用会自动换下一个，全部失败时实况图降级为静态图。默认使用公共免费接口(api.bugpk.com)，担心单点故障可自行追加其他支持快手实况的接口",
+                        "type": "string",
+                        "default": "https://api.bugpk.com/api/ksjx?url={url}"
+                    },
                     "range_download_max_parts": {
                         "description": "该平台最大分块数上限",
                         "hint": "覆盖全局最大分块数上限，0表示使用全局值",

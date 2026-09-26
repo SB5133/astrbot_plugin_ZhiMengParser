@@ -1,5 +1,20 @@
 # 更新日志
 
+## v1.6.6
+
+### 新增
+
+- **快手实况图（动态图）解析**（`core/parsers/kuaishou.py`）
+  - 修复快手实况图作品只下发静态图、丢失动态效果的问题。
+  - 根因：快手实况视频只存在于 App 原生接口（带签名），Web 端（H5 分享页 `INIT_STATE` / PC 网页）全链路均不含实况视频字段——H5 仅有静态图（`coverUrls`）+ 音频（`ext_params.single.music`），H5/PC 前端 bundle 中也没有任何实况渲染逻辑。实况标记为单图作品 `ext_params.single.type == 3`（`photoType=SINGLE_PICTURE`、`mainMvUrls` 为空）。
+  - 实现：检测到实况图后，通过聚合解析接口（默认 `api.bugpk.com/api/ksjx`，可配置）用分享链接换取带 `pkey` 签名的实况 mp4 临时直链，以 `DynamicContent`（发送阶段按视频消息发出）与静态图一起发送。
+  - 新增快手解析器配置：`live_photo_enabled`（默认开）、`live_photo_send_image`（默认开，同时发静态图）、`live_photo_api`（接口模板，`{url}` 为分享链接占位符）。
+  - 容错：接口请求失败 / 返回结构变化 / 非实况类型一律静默降级为原有静态图流程，不影响正常解析；旧配置缺省字段按默认值处理。
+- **图集型实况（每张图都是 live）支持**（`core/parsers/kuaishou.py`）
+  - 实测分享链接 `v.kuaishou.com/KNHDaA1N`（31 张风景实况图集）发现：图集型实况在 H5 数据里 `ext_params.atlas.type` 恒为 1，与普通图集完全无法区分（区别仅在 App 原生接口响应的 `atlasLivePhotoMeta` 字段，该字段 Web 端不下发）。
+  - 因此图集作品（`is_picture` 且有 atlas 图且无视频）在 `live_photo_enabled` 开启时也会探测一次聚合接口：返回 `type == "live"` 且带 `live_photo[].video` 则发全部实况视频（配合 `live_photo_send_image` 控制是否同时发静态图）；探测失败 / 非 live 静默走原图集路径。单图静态作品与视频作品不探测，不产生额外请求。
+  - **三方接口防挂**：`live_photo_api` 支持每行一个接口模板，按顺序尝试，第一个返回实况直链的生效（接口级失败自动切下一个）；连续失败达 3 次后熔断 5 分钟，冷却期内不再发探测请求直接降级，避免接口挂掉时每条快手图集解析都白等一次超时；单图实况（H5 已确认）接口未兑现也计失败，图集探测返回非 live 属正常否定不计。
+
 ## v1.6.5
 
 ### 修复

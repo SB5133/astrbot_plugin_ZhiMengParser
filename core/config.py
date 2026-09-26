@@ -160,6 +160,10 @@ class ParserItem(ConfigNode):
     video_codec_list: list | None
     video_quality: str | None
     nsfw: str | None
+    # 快手实况图(动态图)解析
+    live_photo_enabled: bool | None
+    live_photo_send_image: bool | None
+    live_photo_api: str | None
 
     @property
     def name(self) -> str:
