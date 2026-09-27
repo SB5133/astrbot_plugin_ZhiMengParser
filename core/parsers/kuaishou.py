@@ -95,7 +95,7 @@ class KuaiShouParser(BaseParser):
             # 单图实况已由 H5 标记确认, 接口没兑现也计入接口失败;
             # 图集探测未确认, 返回非 live 属正常否定, 不计入
             live_slots = await self._fetch_live_photo_urls(
-                url, confirmed=photo.is_live_photo
+                url, confirmed=photo.is_live_photo, photo_id=photo.photo_id
             )
             if live_slots:
                 live_n = sum(1 for s in live_slots if s)
@@ -181,24 +181,28 @@ class KuaiShouParser(BaseParser):
         )
 
     async def _fetch_live_photo_urls(
-        self, page_url: str, confirmed: bool = False
+        self, page_url: str, confirmed: bool = False, photo_id: str | None = None
     ) -> list[str | None]:
-        """通过聚合解析接口换取快手实况图的视频直链。
+        """通过原生代发服务/聚合解析接口换取快手实况图的视频直链。
 
         返回与图集按索引对齐的槽位列表: 实况条目为视频直链, 静态条目为
         None (作者混搭上传时接口按图集顺序逐条返回, 空 video 即该图为
         静态图, 不是数据缺失)。全空槽位归一为空列表(视为非实况)。
 
-        流程: 按 live_photo_api 配置逐行取接口模板(空则用默认), 依序尝试,
-        第一个返回实况直链的接口生效。HTTP 失败/结构变化视为接口失败,
-        累计连续失败达到阈值后熔断, 冷却期内不再发请求直接降级,
-        避免接口挂掉时每条快手图集解析都白等一次超时。
+        流程: 配置了 live_photo_native_url 时优先走原生代发服务
+        (ks_live_server, 快手 App 深链签名, 数据与 App 完全一致);
+        未配置或不可达再按 live_photo_api 配置逐行取接口模板(空则用
+        默认), 依序尝试, 第一个返回实况直链的接口生效。HTTP 失败/结构
+        变化视为接口失败, 累计连续失败达到阈值后熔断, 冷却期内不再发
+        请求直接降级, 避免接口挂掉时每条快手图集解析都白等一次超时。
 
         Args:
             page_url: 分享链接
             confirmed: True 表示 H5 标记已确认是实况(单图实况), 此时接口
                 正常响应却没有实况直链也计入接口失败; False 表示仅图集
                 探测, 返回非 live 属正常否定, 不计失败。
+            photo_id: 数字作品 ID (H5 INIT_STATE photoId), 原生代发服务
+                定向查询必需; 缺失则跳过原生服务直接走三方链。
 
         任何失败均静默降级为空列表, 上层继续按普通图片作品发送。
         """
@@ -206,14 +210,17 @@ class KuaiShouParser(BaseParser):
             # 熔断冷却期, 静默跳过
             return []
 
-        # 原生代发服务优先 (FridaRPC, App 进程内代发, 热更自动跟随);
-        # 本地服务挂了不值得等, 3s 短超时, 失败静默回落三方接口链
+        # 原生代发服务优先 (ks_live_server: 模拟器快手 App 深链驱动签名,
+        # 数据与 App 一致, 不依赖三方接口可用性);
+        # 失败静默回落三方接口链
         native_url = (self.mycfg.live_photo_native_url or "").strip()
         if native_url:
-            native_videos = await self._fetch_live_photo_native(native_url, page_url)
-            if native_videos:
+            native_slots = await self._fetch_live_photo_native(
+                native_url, page_url, photo_id
+            )
+            if native_slots:
                 self._live_api_fail_count = 0
-                return native_videos
+                return native_slots
 
         templates = [
             t.strip()
@@ -247,29 +254,72 @@ class KuaiShouParser(BaseParser):
         return []
 
     async def _fetch_live_photo_native(
-        self, native_url: str, page_url: str
-    ) -> list[str]:
-        """从 FridaRPC 原生代发服务获取实况视频直链。
+        self, native_url: str, page_url: str, photo_id: str | None = None
+    ) -> list[str | None]:
+        """从 ks_live_server 原生代发服务获取实况直链。
 
-        GET {native_url}/live_photo?url=<分享链接> -> {"ok": true, "videos": [...]}
-        任何失败(服务不可达/超时/响应变化)静默返回空列表, 回落三方接口链。
+        GET {native_url}/live_photo?photo_id=<数字ID>
+        -> {"result": 1, "mtype": 3|6,
+            "images": [{"index": 0, "is_live": true, "static_url": "...",
+                        "live_url": "...", "backup_urls": [...]}, ...],
+            "main_mv_urls": ["..."]}
+
+        服务端由 mitmproxy addon 深链驱动模拟器快手 App (ksnebula://work/)
+        自签名请求 /rest/nebula/photo/info2, 数据与 App 完全一致。
+
+        解析规则:
+        - mtype=6 图集: images 按 index 排序取槽位, 实况=live_url,
+          静态=None; 全 None 说明原生确认整组无实况, 原样返回以跳过
+          三方探测 (静态图仍由 H5 图集源提供, 不用原生 .kvif)。
+        - mtype=3 单图: 只取 main_mv_urls[0] (其余条目是同一视频的
+          CDN 镜像, 全发会重复发同一实况)。
+        - 兼容旧 FridaRPC 格式 {"ok": true, "videos": [...]}。
+
+        任何失败(服务不可达/超时/响应变化/photo_id 缺失)静默返回空
+        列表, 回落三方接口链。
         """
-        api = f"{native_url.rstrip('/')}/live_photo?url={quote(page_url, safe='')}"
+        if not photo_id:
+            return []
+        api = (
+            f"{native_url.rstrip('/')}/live_photo"
+            f"?photo_id={quote(str(photo_id), safe='')}"
+        )
         try:
             async with self.session.get(
                 api,
                 headers=self.ios_headers,
                 proxy=self.proxy,
-                timeout=aiohttp.ClientTimeout(total=3),
+                # 服务端深链触发+等 info2 典型 ~1s, App 冷启动最坏 ~20s;
+                # 插件侧 8s 封顶, 超时即回落三方接口链
+                timeout=aiohttp.ClientTimeout(total=8),
             ) as resp:
                 if resp.status >= 400:
                     return []
                 data = await resp.json(content_type=None)
-            if data and data.get("ok"):
-                return list(data.get("videos") or [])
         except Exception:  # noqa: BLE001
-            pass
-        return []
+            return []
+        if not isinstance(data, dict):
+            return []
+        # 旧 FridaRPC 格式兼容
+        if data.get("ok") and data.get("videos"):
+            return [u for u in data["videos"] if u]
+        # result 缺省视为成功 (容错旧版服务端漏发 result 字段)
+        if data.get("result") not in (1, None):
+            return []
+        if str(data.get("mtype")) == "3":
+            mv = [u for u in (data.get("main_mv_urls") or []) if u]
+            return [mv[0]] if mv else []
+        images = data.get("images") or []
+        if not images:
+            return []
+        images = sorted(
+            images,
+            key=lambda x: x.get("index", 0) if isinstance(x, dict) else 0,
+        )
+        return [
+            (img.get("live_url") or None) if isinstance(img, dict) else None
+            for img in images
+        ]
 
     async def _try_live_api(self, template: str, page_url: str) -> list[str | None] | None:
         """尝试单个接口模板。
@@ -391,6 +441,8 @@ class Photo(Struct):
     main_mv_urls: list[CdnUrl] = field(name="mainMvUrls", default_factory=list)
     single_picture: bool = field(default=False, name="singlePicture")
     photo_type: str | None = field(default=None, name="photoType")
+    photo_id: str | None = field(default=None, name="photoId")
+    """数字作品 ID (H5 INIT_STATE 提供), 供原生代发服务 ks_live_server 定向查询"""
     ext_params: ExtParams = field(name="ext_params", default_factory=ExtParams)
 
     like_count: int | str | None = field(default=None, name="likeCount")

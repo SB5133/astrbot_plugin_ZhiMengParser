@@ -1,5 +1,21 @@
 # 更新日志
 
+## v1.6.13
+
+### 变更
+
+- **原生代发服务对接 ks_live_server（mitmproxy + 模拟器快手 App 深链签名）**（`core/parsers/kuaishou.py` + `_conf_schema.json`）
+  - Frida 注入路线已被快手反注入检测定性为原理性死结（运行期主动自杀，时序差无法逾越），`live_photo_native_url` 的服务端实现更换为 ks_live_server：mitmproxy addon 深链驱动模拟器快手 App（`ksnebula://work/<photoId>`）自签名请求 `/rest/nebula/photo/info2`，签名/风控全原生，数据与 App 完全一致。
+  - `_fetch_live_photo_urls` 新增 `photo_id` 参数：Photo 结构体解析 H5 INIT_STATE 的数字 `photoId`，定向传给原生服务（服务端按 photoId 深链查询）。
+  - `_fetch_live_photo_native` 重写为新协议：`GET {native_url}/live_photo?photo_id=<数字ID>`；mtype=6 图集按 index 取槽位（实况=live_url，静态=None，全 None 视为原生确认无实况、跳过三方探测）；mtype=3 单图只取 `main_mv_urls[0]`（其余为同视频 CDN 镜像，全发会重复）；保留旧 FridaRPC `{"ok","videos"}` 格式兼容。超时 3s→8s（服务端深链触发典型 ~1s）。
+  - 容错：服务端响应缺 `result` 字段视为成功（旧版服务端漏发不误杀）。
+  - 静态图仍走 H5 图集源（.jpg/.webp），不使用原生 `.kvif`（HEIF 封装，QQ 无法直接显示），无需转换。
+
+### 验证
+
+- verify_ks_live.py 步骤10 重写为 5 个用例：native 图集 31 槽位全实况对齐（三方接口 0 调用）、混搭槽位 3 图 + 28 视频按索引对齐、mtype=3 单图镜像去重、native 不可达回落三方、旧格式兼容，全部通过。
+- 真机端到端：插件 native 客户端 ← ks_live_server（MuMu 模拟器 + mitmdump 实跑），31/31 实况槽位命中。
+
 ## v1.6.12
 
 ### 优化
