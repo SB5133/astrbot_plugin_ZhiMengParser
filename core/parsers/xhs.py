@@ -131,9 +131,9 @@ class XHSParser(BaseParser):
             cover_url = note_detail.image_urls[0] if note_detail.image_urls else None
             contents.append(self.create_video_content(video_url, cover_url))
 
-        # 添加图片内容
+        # 添加图片/实况内容
         elif image_urls := note_detail.image_urls:
-            contents.extend(self.create_image_contents(image_urls))
+            contents.extend(self._build_image_contents(note_data, image_urls))
 
         # 构建作者
         author = self.create_author(note_detail.nickname, note_detail.avatar_url)
@@ -219,6 +219,7 @@ class XHSParser(BaseParser):
             def image_urls(self) -> list[str]:
                 return [item.urlSizeLarge or item.url for item in self.imagesList]
 
+        note_data_raw = note_data
         note_data = convert(note_data, type=NoteData)
 
         contents = []
@@ -230,7 +231,7 @@ class XHSParser(BaseParser):
                 img_urls = note_data.image_urls
             contents.append(self.create_video_content(video_url, img_urls[0]))
         elif img_urls := note_data.image_urls:
-            contents.extend(self.create_image_contents(img_urls))
+            contents.extend(self._build_image_contents(note_data_raw, img_urls))
 
         return self.result(
             title=note_data.title,
@@ -240,6 +241,54 @@ class XHSParser(BaseParser):
             timestamp=note_data.time // 1000,
             extra=self._build_interact_extra(note_data.interactInfo),
         )
+
+    def _build_image_contents(self, note_data: dict, image_urls: list[str]) -> list:
+        """普通图出图, 实况图(动态)出视频; 实况槽位与图集按索引对齐"""
+        live_slots = self._extract_live_slots(note_data)
+        if live_slots and any(live_slots) and len(live_slots) == len(image_urls):
+            live_n = sum(1 for s in live_slots if s)
+            logger.info(
+                f"[小红书] 检测到实况图, {live_n}/{len(live_slots)} 张为实况"
+            )
+            contents = []
+            for i, slot in enumerate(live_slots):
+                if slot:
+                    contents.append(self.create_dynamic_content(slot))
+                else:
+                    contents.append(self.create_image_content(image_urls[i]))
+            return contents
+        return self.create_image_contents(image_urls)
+
+    @staticmethod
+    def _extract_live_slots(note_data: dict) -> list[str | None]:
+        """按 imageList 顺序提取每张图的实况视频直链, 静态图为 None 槽位.
+
+        兼容不同版本字段命名: livePhotoUrl / live_photo_url / live_photo;
+        livePhoto 为含 url 字段的对象时一并处理, 布尔值跳过。
+        """
+        imgs = note_data.get("imageList") or note_data.get("imagesList") or []
+        slots: list[str | None] = []
+        for img in imgs:
+            url: str | None = None
+            if isinstance(img, dict):
+                for key in ("livePhotoUrl", "live_photo_url", "live_photo"):
+                    val = img.get(key)
+                    if isinstance(val, str) and val.startswith("http"):
+                        url = val
+                        break
+                if url is None:
+                    lp = img.get("livePhoto")
+                    if isinstance(lp, dict):
+                        url = next(
+                            (
+                                v
+                                for v in lp.values()
+                                if isinstance(v, str) and v.startswith("http")
+                            ),
+                            None,
+                        )
+            slots.append(url)
+        return slots
 
     def _extract_initial_state_json(self, html: str) -> dict[str, Any]:
         pattern = r"window\.__INITIAL_STATE__=(.*?)</script>"
