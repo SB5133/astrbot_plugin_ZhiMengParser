@@ -6,8 +6,9 @@
 
 - **小红书实况图（动态）解析支持**（`core/parsers/xhs.py`）
   - 此前小红书实况图笔记（imageList 内带 `livePhoto` 标记的条目）被当普通图集处理，动态视频直链直接丢弃。
-  - explore / discovery 两条解析路径均接入实况槽位提取：按 imageList 顺序提取每张图的实况 mp4 直链（兼容 `livePhotoUrl` / `live_photo_url` / `live_photo` 三种字段命名，及 `livePhoto` 为对象的形态），实况条目出视频消息（DynamicContent），静态条目出图，槽位与图集按索引对齐（与快手实况同模式）。
-  - 无需平板/native 链路：小红书实况直链（sns-video-hw.xhscdn.com）就嵌在页面笔记 JSON 里，纯服务端直取。
+  - explore / discovery 两条解析路径均接入实况槽位提取：按 imageList 顺序提取每张图的实况 mp4 直链，实况条目出视频消息（DynamicContent），静态条目出图，槽位与图集按索引对齐（与快手实况同模式）。
+  - 真实链接抓包确认字段形态：web 版实况 mp4 在 `imageList[i].stream`（结构与视频笔记流一致，`masterUrl` 优先 h265→h264→av1→h266），`livePhoto` 仅布尔标记；静态图 stream 为空、不会误判。兼容旧字段命名 `livePhotoUrl` / `live_photo_url` / `live_photo` 及 `livePhoto` 为对象的形态。
+  - 无需平板/native 链路：实况直链（sns-video-v2.xhscdn.com）就嵌在页面笔记 JSON 里，纯服务端直取，裸 UA 即可下载（实测 206 video/mp4）。
 
 ### 验证
 

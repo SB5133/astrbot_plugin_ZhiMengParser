@@ -260,11 +260,23 @@ class XHSParser(BaseParser):
         return self.create_image_contents(image_urls)
 
     @staticmethod
+    def _stream_url(stream_data: Any) -> str | None:
+        """从 stream 结构提取直链, 编码优先级与视频笔记一致 (h265 无水印)"""
+        if not isinstance(stream_data, dict):
+            return None
+        for codec in ("h265", "h264", "av1", "h266"):
+            for item in stream_data.get(codec) or []:
+                if isinstance(item, dict) and item.get("masterUrl"):
+                    return item["masterUrl"]
+        return None
+
+    @staticmethod
     def _extract_live_slots(note_data: dict) -> list[str | None]:
         """按 imageList 顺序提取每张图的实况视频直链, 静态图为 None 槽位.
 
-        兼容不同版本字段命名: livePhotoUrl / live_photo_url / live_photo;
-        livePhoto 为含 url 字段的对象时一并处理, 布尔值跳过。
+        小红书 web 版实况直链在 imageList[i].stream 里 (结构与视频笔记一致),
+        livePhoto 为布尔标记; 兼容旧字段命名 livePhotoUrl / live_photo_url /
+        live_photo 及 livePhoto 为对象的形态。
         """
         imgs = note_data.get("imageList") or note_data.get("imagesList") or []
         slots: list[str | None] = []
@@ -287,6 +299,9 @@ class XHSParser(BaseParser):
                             ),
                             None,
                         )
+                # web 版: 实况 mp4 在 stream 结构里 (有 masterUrl 才算实况)
+                if url is None:
+                    url = XHSParser._stream_url(img.get("stream"))
             slots.append(url)
         return slots
 
