@@ -1,5 +1,6 @@
 import re
 from dataclasses import dataclass
+from random import choice
 from typing import TYPE_CHECKING, Any, ClassVar
 from urllib.parse import urlparse
 
@@ -232,12 +233,28 @@ class DouyinParser(BaseParser):
         # 使用新的简洁构建方式
         contents = []
 
-        # 添加图片内容
-        if image_urls := video_data.image_urls:
-            logger.debug(f"[抖音] 检测到图文内容，图片数量: {len(image_urls)}")
-            contents.extend(
-                self.create_image_contents(image_urls, headers=self.ios_headers)
+        # 添加图片内容 (实况图: 带内嵌视频的图出动态, 其余出静态图, 槽位对齐)
+        if video_data.images:
+            logger.debug(f"[抖音] 检测到图文内容，图片数量: {len(video_data.images)}")
+            live_n = sum(
+                1 for im in video_data.images if im.video and im.video.play_addr.url_list
             )
+            if live_n:
+                logger.info(f"[抖音] 检测到实况图, {live_n}/{len(video_data.images)} 张为实况")
+            for image in video_data.images:
+                if image.video and image.video.play_addr.url_list:
+                    contents.append(
+                        self.create_dynamic_content(
+                            choice(image.video.play_addr.url_list),
+                            headers=self.ios_headers,
+                        )
+                    )
+                elif image.url_list:
+                    contents.append(
+                        self.create_image_content(
+                            choice(image.url_list), headers=self.ios_headers
+                        )
+                    )
 
         # 添加视频内容
         elif video_data.video:
@@ -379,19 +396,27 @@ class DouyinParser(BaseParser):
         )
         contents = []
 
-        # 添加图片内容
-        if image_urls := slides_data.image_urls:
-            logger.debug(f"[抖音] 检测到幻灯片图片，数量: {len(image_urls)}")
-            contents.extend(
-                self.create_image_contents(image_urls, headers=self.android_headers)
-            )
-
-        # 添加动态内容
-        if dynamic_urls := slides_data.dynamic_urls:
-            logger.debug(f"[抖音] 检测到幻灯片动态效果，数量: {len(dynamic_urls)}")
-            contents.extend(
-                self.create_dynamic_contents(dynamic_urls, headers=self.android_headers)
-            )
+        # 图集槽位对齐: 实况图(带内嵌视频)出动态, 静态图出图, 避免图+动全量双发
+        if slides_data.images:
+            live_n = sum(1 for im in slides_data.images if im.video)
+            if live_n:
+                logger.info(
+                    f"[抖音] 检测到实况图, {live_n}/{len(slides_data.images)} 张为实况"
+                )
+            for image in slides_data.images:
+                if image.video and image.video.play_addr.url_list:
+                    contents.append(
+                        self.create_dynamic_content(
+                            choice(image.video.play_addr.url_list),
+                            headers=self.android_headers,
+                        )
+                    )
+                elif image.url_list:
+                    contents.append(
+                        self.create_image_content(
+                            choice(image.url_list), headers=self.android_headers
+                        )
+                    )
 
         # 构建作者
         author = self.create_author(

@@ -1,5 +1,18 @@
 # 更新日志
 
+## v1.6.15
+
+### 变更
+
+- **抖音实况图（动态）解析支持 + 图集槽位对齐**（`core/parsers/douyin/__init__.py`）
+  - slides 路径（`/share/slides/`，实况图集主路径）：原先「全量静态图 + 全量动态追加」双发（33 图 32 实况会发 65 条），改为槽位对齐——实况图（带内嵌 `video.play_addr`）出视频消息，静态图出图，一槽一条（同快手/小红书模式）。
+  - note/图文路径（`_ROUTER_DATA`）：原先只发静态图、丢弃每张图内嵌的实况视频，同样接入槽位对齐提取。
+  - 真实链接验证（v.douyin.com/w0ARXtJVW1Y → slides/7689254975042746619，33 图 32 实况）：slidesinfo API 返回完整 `images[].video.play_addr`，play 直链裸 UA 可下（200 video/mp4）；`contains_video_type_clip=1` 的实况笔记短链重定向到 `/share/slides/`，全部走 slidesinfo 路径。
+
+### 验证
+
+- 真实数据桩测：33 槽 → 32 dynamic + 1 image，ALL_PASS；`python -m py_compile` 通过；待群内端到端。
+
 ## v1.6.14
 
 ### 变更
