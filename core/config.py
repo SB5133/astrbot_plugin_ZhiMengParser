@@ -535,3 +535,19 @@ class PluginConfig(ConfigNode):
         if umo in self.blacklist:
             self.blacklist.remove(umo)
             self.save_config()
+
+    def add_user_blacklist(self, user_id: str) -> bool:
+        """拉黑用户，返回是否为新拉黑（False 表示已在黑名单）"""
+        if user_id not in self.user_blacklist:
+            self.user_blacklist.append(user_id)
+            self.save_config()
+            return True
+        return False
+
+    def remove_user_blacklist(self, user_id: str) -> bool:
+        """取消拉黑用户，返回是否成功移除（False 表示不在黑名单）"""
+        if user_id in self.user_blacklist:
+            self.user_blacklist.remove(user_id)
+            self.save_config()
+            return True
+        return False

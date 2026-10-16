@@ -652,6 +652,67 @@ class ParserPlugin(Star):
         self.cfg.add_blacklist(umo)
         yield event.plain_result("当前会话的解析已关闭")
 
+    def _parse_block_targets(self, event: AstrMessageEvent, cmd: str) -> list[str]:
+        """提取拉黑目标：消息链里的 At 元素 + 去掉指令词后的纯数字 QQ 号"""
+        targets: list[str] = []
+        for comp in event.get_messages():
+            if isinstance(comp, At):
+                qq = str(getattr(comp, "qq", "") or "").strip()
+                if qq:
+                    targets.append(qq)
+        text = re.sub(rf"^{cmd}\s*", "", event.message_str.strip()).strip()
+        for token in text.split():
+            if token.isdigit():
+                targets.append(token)
+        # 去重，保持顺序
+        seen: set[str] = set()
+        return [t for t in targets if not (t in seen or seen.add(t))]
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("拉黑")
+    async def block_user(self, event: AstrMessageEvent):
+        """拉黑用户：拉黑 @某人 / 拉黑 QQ号（支持多个）"""
+        targets = self._parse_block_targets(event, "拉黑")
+        if not targets:
+            if event.message_str.strip().endswith("列表"):
+                async for r in self._block_list_result(event):
+                    yield r
+                return
+            yield event.plain_result("用法：拉黑 @某人 或 拉黑 QQ号")
+            return
+        for t in targets:
+            if self.cfg.add_user_blacklist(t):
+                yield event.plain_result("ok")
+            else:
+                yield event.plain_result(f"{t} 已在黑名单中")
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("取消拉黑", alias={"解除拉黑"})
+    async def unblock_user(self, event: AstrMessageEvent):
+        """取消拉黑用户：取消拉黑 @某人 / 取消拉黑 QQ号"""
+        targets = self._parse_block_targets(event, "取消拉黑") or self._parse_block_targets(event, "解除拉黑")
+        if not targets:
+            yield event.plain_result("用法：取消拉黑 @某人 或 取消拉黑 QQ号")
+            return
+        for t in targets:
+            if self.cfg.remove_user_blacklist(t):
+                yield event.plain_result("ok")
+            else:
+                yield event.plain_result(f"{t} 不在黑名单中")
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("黑名单", alias={"用户黑名单", "拉黑列表"})
+    async def block_list(self, event: AstrMessageEvent):
+        """查看用户黑名单"""
+        async for r in self._block_list_result(event):
+            yield r
+
+    async def _block_list_result(self, event: AstrMessageEvent):
+        if self.cfg.user_blacklist:
+            yield event.plain_result("用户黑名单：\n" + "\n".join(self.cfg.user_blacklist))
+        else:
+            yield event.plain_result("用户黑名单为空")
+
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("登录B站", alias={"blogin", "登录b站"})
     async def login_bilibili(self, event: AstrMessageEvent):
