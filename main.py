@@ -658,7 +658,7 @@ class ParserPlugin(Star):
         for comp in event.get_messages():
             if isinstance(comp, At):
                 qq = str(getattr(comp, "qq", "") or "").strip()
-                if qq:
+                if qq.isdigit():
                     targets.append(qq)
         text = re.sub(rf"^{cmd}\s*", "", event.message_str.strip()).strip()
         for token in text.split():
@@ -680,11 +680,15 @@ class ParserPlugin(Star):
                 return
             yield event.plain_result("用法：拉黑 @某人 或 拉黑 QQ号")
             return
+        added, existed = [], []
         for t in targets:
-            if self.cfg.add_user_blacklist(t):
-                yield event.plain_result("ok")
-            else:
-                yield event.plain_result(f"{t} 已在黑名单中")
+            (added if self.cfg.add_user_blacklist(t) else existed).append(t)
+        if added and not existed:
+            yield event.plain_result("ok")
+        elif added:
+            yield event.plain_result(f"ok，已拉黑 {' '.join(added)}；{' '.join(existed)} 已在黑名单")
+        else:
+            yield event.plain_result(f"{' '.join(existed)} 已在黑名单中")
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("取消拉黑", alias={"解除拉黑"})
@@ -694,11 +698,15 @@ class ParserPlugin(Star):
         if not targets:
             yield event.plain_result("用法：取消拉黑 @某人 或 取消拉黑 QQ号")
             return
+        removed, missing = [], []
         for t in targets:
-            if self.cfg.remove_user_blacklist(t):
-                yield event.plain_result("ok")
-            else:
-                yield event.plain_result(f"{t} 不在黑名单中")
+            (removed if self.cfg.remove_user_blacklist(t) else missing).append(t)
+        if removed and not missing:
+            yield event.plain_result("ok")
+        elif removed:
+            yield event.plain_result(f"ok，已取消 {' '.join(removed)}；{' '.join(missing)} 不在黑名单")
+        else:
+            yield event.plain_result(f"{' '.join(missing)} 不在黑名单中")
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("黑名单", alias={"用户黑名单", "拉黑列表"})
