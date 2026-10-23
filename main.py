@@ -653,16 +653,18 @@ class ParserPlugin(Star):
         yield event.plain_result("当前会话的解析已关闭")
 
     def _parse_block_targets(self, event: AstrMessageEvent, cmd: str) -> list[str]:
-        """提取拉黑目标：消息链里的 At 元素 + 去掉指令词后的纯数字 QQ 号"""
+        """提取拉黑目标：消息链里的 At 元素 + 去掉指令词后的纯数字 QQ 号
+        排除机器人自身（用户习惯 @机器人 再发指令）和 @全体成员(qq=all)"""
+        self_id = str(event.get_self_id() or "")
         targets: list[str] = []
         for comp in event.get_messages():
             if isinstance(comp, At):
                 qq = str(getattr(comp, "qq", "") or "").strip()
-                if qq.isdigit():
+                if qq.isdigit() and qq != self_id:
                     targets.append(qq)
         text = re.sub(rf"^{cmd}\s*", "", event.message_str.strip()).strip()
         for token in text.split():
-            if token.isdigit():
+            if token.isdigit() and token != self_id:
                 targets.append(token)
         # 去重，保持顺序
         seen: set[str] = set()
